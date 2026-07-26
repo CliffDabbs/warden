@@ -1,0 +1,8 @@
+# Normalise line endings — keep LF in the repo (Linux container needs LF for
+# shell/entrypoints), let Windows check out as it likes.
+* text=auto eol=lf
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.png  binary
+*.jpg  binary
+*.ico  binary

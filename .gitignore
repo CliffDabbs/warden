@@ -1,0 +1,50 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Secrets & local state — MUST NEVER be committed
+# ─────────────────────────────────────────────────────────────────────────────
+.env
+**/.env
+# (…but DO track the templates)
+!**/.env.example
+*.key
+*.pem
+secrets.yaml
+
+# captured browser sessions / cookie jars / auth material
+**/atom_state.json
+**/atom_login_profile/
+
+# databases + write-ahead logs (rules, signals, audit, history)
+*.db
+*.db-wal
+*.db-shm
+
+# runtime data directories
+**/data/
+/data/
+
+# logs
+*.log
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────────────────────────────────────
+.venv/
+**/.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# generated IaC output
+iac/out/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Editor / OS
+# ─────────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+*.swp

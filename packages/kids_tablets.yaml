@@ -1,0 +1,49 @@
+# Project B — Block kids' tablets (UniFi block-client switches via HA UniFi integration)
+# Switch semantics: ON = blocked, OFF = allowed.
+# Drop in config/packages/ . Edit every # TODO.
+
+input_boolean:
+  kids_tablets_allowed:
+    name: Kids tablets allowed
+    icon: mdi:tablet
+
+automation:
+  - alias: "Kids tablets - block at bedtime"
+    trigger:
+      - platform: time
+        at: "20:30:00"      # TODO bedtime
+    action:
+      - service: switch.turn_on        # ON = blocked
+        target:
+          entity_id:
+            - switch.kids_ipad_block_client      # TODO real entity ids
+            - switch.kids_tablet2_block_client
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.kids_tablets_allowed
+
+  - alias: "Kids tablets - unblock in the morning"
+    trigger:
+      - platform: time
+        at: "07:00:00"      # TODO wake time
+    action:
+      - service: switch.turn_off       # OFF = allowed
+        target:
+          entity_id:
+            - switch.kids_ipad_block_client
+            - switch.kids_tablet2_block_client
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.kids_tablets_allowed
+
+  - alias: "Kids tablets - manual toggle"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.kids_tablets_allowed
+    action:
+      # allowed ON -> switch OFF (unblock); allowed OFF -> switch ON (block)
+      - service: "switch.turn_{{ 'off' if trigger.to_state.state == 'on' else 'on' }}"
+        target:
+          entity_id:
+            - switch.kids_ipad_block_client
+            - switch.kids_tablet2_block_client

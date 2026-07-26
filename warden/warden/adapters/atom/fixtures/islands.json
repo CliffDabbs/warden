@@ -1,0 +1,57 @@
+[
+  {
+    "title": "Homographs",
+    "type": "practice",
+    "status": "completed",
+    "today": true,
+    "id_island_progression": "prog_hg_001",
+    "id_course_atom": "atom_eng_12",
+    "id_course_subject": 235,
+    "sessions": [{"id_question_session": "qs_hg_1", "sessionHash": "a1f0", "completed": true, "score": 0.82}]
+  },
+  {
+    "title": "Our Solar System and the Universe",
+    "type": "practice",
+    "status": "completed",
+    "today": true,
+    "id_island_progression": "prog_ss_002",
+    "id_course_atom": "atom_sci_5",
+    "id_course_subject": 239,
+    "sessions": [{"id_question_session": "qs_ss_1", "sessionHash": "b2c1", "completed": true, "score": 0.90}]
+  },
+  {
+    "title": "Reading Comprehension: 'The Iron Man'",
+    "type": "practice",
+    "status": "completed",
+    "dateCompleted": "2026-07-20T18:12:00Z",
+    "id_island_progression": "prog_rc_003",
+    "id_course_subject": 234,
+    "sessions": [{"id_question_session": "qs_rc_1", "completed": true, "score": 0.87}]
+  },
+  {
+    "title": "Word Analogies",
+    "type": "practice",
+    "status": "completed",
+    "dateCompleted": "2026-07-19T17:40:00Z",
+    "id_island_progression": "prog_wa_004",
+    "id_course_subject": 235,
+    "sessions": [{"id_question_session": "qs_wa_1", "completed": true, "score": 0.78}]
+  },
+  {
+    "title": "Shape Rotations",
+    "type": "practice",
+    "status": "completed",
+    "dateCompleted": "2026-07-18T16:05:00Z",
+    "id_island_progression": "prog_sr_005",
+    "id_course_subject": 236,
+    "sessions": [{"id_question_session": "qs_sr_1", "completed": true, "score": 0.81}]
+  },
+  {
+    "title": "Fractions: Equivalence",
+    "type": "practice",
+    "status": "not_completed",
+    "id_island_progression": "prog_fr_006",
+    "id_course_subject": 237,
+    "sessions": []
+  }
+]

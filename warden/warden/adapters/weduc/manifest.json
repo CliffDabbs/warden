@@ -1,0 +1,9 @@
+{
+  "id": "weduc",
+  "display_name": "Weduc / ReachMoreParents",
+  "version": "1.0.0",
+  "auth_type": "form_login_session",
+  "capabilities": ["messages", "calendar", "forms", "meals", "newsletter", "posts"],
+  "secrets_required": ["username", "password"],
+  "emits_signals": ["weduc.<subject>.forms_outstanding"]
+}

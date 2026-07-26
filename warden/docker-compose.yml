@@ -1,0 +1,24 @@
+# Warden — bring the whole hub up with one command:  docker compose up -d --build
+# Fill in .env first (copy from .env.example). AdGuard creds + optional Anthropic key.
+services:
+  warden:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: warden:latest
+    container_name: warden
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+    volumes:
+      # live-edit your controls without rebuilding
+      - ./config:/app/config:ro
+      # persist rules / signals / audit
+      - warden-data:/app/data
+    # AdGuard is on the LAN; host networking is the simplest way to reach 10.7.11.29.
+    # If you prefer bridge networking, remove this and ensure ADGUARD_URL is reachable.
+    # network_mode: host
+
+volumes:
+  warden-data:

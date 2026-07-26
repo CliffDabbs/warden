@@ -1,0 +1,77 @@
+<!--
+  Warden — parental-control hub SPA shell.
+  No build step, no framework, no CDN: this page loads one stylesheet and one
+  script, both served from /static, so it works fully offline in a container.
+  All dynamic content is rendered by static/js/app.js into <main id="view">.
+-->
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
+<title>Warden</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 46'%3E%3Cpath d='M20 3 L36 10 L36 22 C36 32 29 39 20 43 C11 39 4 32 4 22 L4 10 Z' fill='%236d8cff'/%3E%3Cpath d='M13 22 l5 5 l9 -11' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/static/css/app.css" />
+
+<div id="app">
+  <!-- ── top bar: wordmark + AdGuard status pill ─────────────────────────── -->
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="Warden home">
+      <!-- inline SVG shield wordmark (no external assets) -->
+      <svg class="brand-mark" viewBox="0 0 40 46" width="30" height="34" aria-hidden="true">
+        <defs>
+          <linearGradient id="wardenShield" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#7d97ff" />
+            <stop offset="1" stop-color="#5566e0" />
+          </linearGradient>
+        </defs>
+        <path d="M20 3 L36 10 L36 22 C36 32 29 39 20 43 C11 39 4 32 4 22 L4 10 Z"
+              fill="url(#wardenShield)" stroke="#9db0ff" stroke-width="0.75" />
+        <path d="M13 22 l5 5 l9 -11" fill="none" stroke="#fff" stroke-width="3"
+              stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      <span class="brand-text">
+        <span class="brand-name">Warden</span>
+        <span class="brand-tag">parental control hub</span>
+      </span>
+    </a>
+
+    <div class="topbar-right">
+      <div id="statusPill" class="status-pill status-unknown" title="AdGuard status">
+        <span class="status-dot"></span>
+        <span class="status-label">connecting…</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── view tabs + live-connection indicator ───────────────────────────── -->
+  <nav class="tabs" id="tabs" aria-label="Views">
+    <button class="tab is-active" data-view="dashboard" type="button">Dashboard</button>
+    <button class="tab" data-view="rules" type="button">Rules</button>
+    <button class="tab" data-view="sources" type="button">Sources</button>
+    <button class="tab" data-view="activity" type="button">Activity</button>
+    <button class="tab" data-view="about" type="button">About</button>
+    <span class="tabs-spacer"></span>
+    <span id="liveDot" class="live-dot live-off" title="Live connection">
+      <span class="live-dot-mark"></span>
+      <span class="live-dot-text">offline</span>
+    </span>
+  </nav>
+
+  <!-- ── the mounted view ────────────────────────────────────────────────── -->
+  <main id="view" class="view" aria-live="polite"></main>
+
+  <footer class="footer">
+    <span>Warden</span> · a plain-English rules engine over AdGuard Home ·
+    <span class="footer-muted">secrets live in <code>.env</code>, never in the browser</span>
+  </footer>
+</div>
+
+<!-- toast notifications mount here -->
+<div id="toasts" class="toasts" aria-live="assertive"></div>
+
+<noscript>
+  <p style="padding:2rem;color:#e6e9ef;background:#0f1117">
+    Warden needs JavaScript enabled to run its dashboard.
+  </p>
+</noscript>
+
+<script src="/static/js/app.js" defer></script>

@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+warden.db
+warden.db-wal
+warden.db-shm
+data/
+*.log

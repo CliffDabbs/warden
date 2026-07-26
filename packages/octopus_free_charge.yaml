@@ -1,0 +1,56 @@
+# Project C — Grid-charge battery during Octopus Free Electricity sessions
+# Octopus integration detects session -> HA -> MQTT publish -> Solar Assistant -> Sunsynk grid charge.
+# Drop in config/packages/ . Edit every # TODO.
+
+input_number:
+  battery_charge_target_soc:
+    name: Battery charge target SoC
+    min: 50
+    max: 100
+    step: 5
+    unit_of_measurement: "%"
+    icon: mdi:battery-charging-90
+
+automation:
+  - alias: "Octopus free session - start grid charge"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.octopus_energy_ACCOUNT_free_electricity_session   # TODO real entity
+        to: "on"
+    condition:
+      - condition: numeric_state
+        entity_id: sensor.battery_state_of_charge        # TODO real SoC sensor
+        below: input_number.battery_charge_target_soc
+    action:
+      - service: notify.mobile_app_YOURPHONE             # TODO your notify service
+        data:
+          title: "Octopus free electricity"
+          message: "Session live - grid-charging battery to {{ states('input_number.battery_charge_target_soc') }}%."
+      - service: mqtt.publish
+        data:
+          topic: "solar_assistant/inverter_1/grid_charge/set"   # TODO confirm topic via MQTT Explorer
+          payload: "true"                                       # TODO confirm payload (true/1/Enabled)
+
+  - alias: "Octopus free session - stop grid charge"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.octopus_energy_ACCOUNT_free_electricity_session   # TODO real entity
+        to: "off"
+      - platform: numeric_state
+        entity_id: sensor.battery_state_of_charge        # TODO real SoC sensor
+        above: input_number.battery_charge_target_soc
+    action:
+      - service: mqtt.publish
+        data:
+          topic: "solar_assistant/inverter_1/grid_charge/set"   # TODO same topic
+          payload: "false"                                      # TODO confirm payload (false/0/Disabled)
+
+  - alias: "Octopus free session - opt-in reminder"
+    trigger:
+      - platform: state
+        entity_id: event.octopus_energy_ACCOUNT_free_electricity_session_events    # TODO real event entity
+    action:
+      - service: notify.mobile_app_YOURPHONE             # TODO your notify service
+        data:
+          title: "Octopus free session announced"
+          message: "Open the Octopus app and opt in - HA will auto-charge when it goes live."

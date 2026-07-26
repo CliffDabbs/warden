@@ -1,0 +1,84 @@
+{
+  "captured_at": "2026-07-21T13:49:00Z",
+  "school": "Seabrook Church of England Primary School",
+  "account_holder": "Cliff Dabbs",
+  "child": {
+    "id": "281474978315151",
+    "name": "Luke Dabbs",
+    "class": "Jellyfish Class"
+  },
+  "newsfeed": [
+    {
+      "id": "88213",
+      "title": "Jellyfish – games for Friday",
+      "body": "Jellyfish Class can bring in a board game (named, please) this Friday afternoon for our end-of-term games session. Nothing with small parts for the younger ones. Thank you!",
+      "posted_at": "2026-07-16T11:06:00Z",
+      "audience_tags": ["Jellyfish Class"],
+      "url": "https://ui.app.weduc.co.uk/dashboard/newsfeed/list/user/281474978315151#88213",
+      "attachments": []
+    },
+    {
+      "id": "88240",
+      "title": "Newsletter – 17th July 2026",
+      "body": "This week's newsletter is attached. Highlights: reports have gone home, clubs have finished for the year, and there is a new-build update inside.",
+      "posted_at": "2026-07-17T15:30:00Z",
+      "audience_tags": ["whole-school", "Seabrook Church of England Primary School"],
+      "url": "https://ui.app.weduc.co.uk/dashboard/newsfeed/list/user/281474978315305#88240",
+      "attachments": [
+        {
+          "kind": "pdf",
+          "name": "Newsletter 17th July 2026.pdf",
+          "url": "https://ui.app.weduc.co.uk/file/newsletter-2026-07-17.pdf",
+          "mime": "application/pdf"
+        }
+      ]
+    }
+  ],
+  "forms": [
+    {
+      "id": "f-choir-2627",
+      "title": "Interest in choir for the new school year (2026/2027)",
+      "status": "outstanding",
+      "due_at": "2026-07-24T23:59:00Z",
+      "audience_tags": ["whole-school"],
+      "url": "https://ui.app.weduc.co.uk/forms/index/forms/user/281474978315151#f-choir-2627"
+    },
+    {
+      "id": "f-medicine",
+      "title": "Permission for School to Administer Short Term Prescription Medicine",
+      "status": "outstanding",
+      "due_at": null,
+      "audience_tags": ["Jellyfish Class"],
+      "url": "https://ui.app.weduc.co.uk/forms/index/forms/user/281474978315151#f-medicine"
+    },
+    {
+      "id": "f-sports-day",
+      "title": "Sports Day helper sign-up",
+      "status": "submitted",
+      "due_at": null,
+      "audience_tags": ["whole-school"],
+      "url": "https://ui.app.weduc.co.uk/forms/index/forms/user/281474978315151#f-sports-day"
+    }
+  ],
+  "calendar": [
+    {
+      "id": "evt-term1",
+      "title": "Term 1 Starts",
+      "body": "Autumn term begins for all pupils.",
+      "start": "2026-09-02T08:45:00Z",
+      "audience_tags": ["whole-school"]
+    },
+    {
+      "id": "evt-flu",
+      "title": "Flu Immunisation",
+      "body": "Nasal flu immunisation in school for consented pupils.",
+      "start": "2026-09-30T09:00:00Z",
+      "audience_tags": ["whole-school"]
+    }
+  ],
+  "meals": {
+    "balance": 0.0,
+    "status": "no_action_required",
+    "unpaid_orders": 0
+  }
+}

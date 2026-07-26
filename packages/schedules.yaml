@@ -1,0 +1,131 @@
+# Time-based scheduling for screen time.
+#
+# Principle: schedules flip the input_booleans; the sync automations in
+# adguard_service_switches.yaml / kids_tablets.yaml do the rest.
+# Never call AdGuard/UniFi directly from a schedule - go through the switches
+# so the dashboard always reflects the real state.
+#
+# Depends on booleans defined in:
+#   - adguard_service_switches.yaml : input_boolean.kids_youtube / kids_netflix / kids_tiktok
+#                                     input_boolean.tv_youtube / tv_netflix
+#   - kids_tablets.yaml             : input_boolean.kids_tablets_allowed
+
+# ---- Schedule helpers (edit the blocks in the UI: Settings > Helpers > click the schedule) ----
+# A schedule entity is 'on' during its blocks, 'off' otherwise.
+schedule:
+  kids_screen_time:
+    name: Kids screen time (allowed window)
+    monday:    [{ from: "16:00:00", to: "19:00:00" }]
+    tuesday:   [{ from: "16:00:00", to: "19:00:00" }]
+    wednesday: [{ from: "16:00:00", to: "19:00:00" }]
+    thursday:  [{ from: "16:00:00", to: "19:00:00" }]
+    friday:    [{ from: "16:00:00", to: "20:00:00" }]
+    saturday:  [{ from: "09:00:00", to: "20:00:00" }]
+    sunday:    [{ from: "09:00:00", to: "19:00:00" }]
+
+  tablet_allowed:
+    name: Kids tablets (allowed window)
+    monday:    [{ from: "07:00:00", to: "20:00:00" }]
+    tuesday:   [{ from: "07:00:00", to: "20:00:00" }]
+    wednesday: [{ from: "07:00:00", to: "20:00:00" }]
+    thursday:  [{ from: "07:00:00", to: "20:00:00" }]
+    friday:    [{ from: "07:00:00", to: "21:00:00" }]
+    saturday:  [{ from: "08:00:00", to: "21:00:00" }]
+    sunday:    [{ from: "08:00:00", to: "20:00:00" }]
+
+# ---- Override switches ----
+input_boolean:
+  holiday_mode:
+    name: Holiday mode (relax bedtime blocks)
+    icon: mdi:beach
+  movie_night:
+    name: Movie night (allow TV YouTube/Netflix)
+    icon: mdi:movie-open
+
+automation:
+  # Kids AdGuard services follow the screen-time window
+  - alias: "Schedule · kids screen time"
+    trigger:
+      - platform: state
+        entity_id: schedule.kids_screen_time
+    action:
+      - choose:
+          - conditions: "{{ trigger.to_state.state == 'on' }}"
+            sequence:
+              - service: input_boolean.turn_on
+                target:
+                  entity_id:
+                    - input_boolean.kids_youtube
+                    - input_boolean.kids_netflix
+                    - input_boolean.kids_tiktok
+        # window closed -> block, UNLESS holiday mode is on
+        default:
+          - condition: state
+            entity_id: input_boolean.holiday_mode
+            state: "off"
+          - service: input_boolean.turn_off
+            target:
+              entity_id:
+                - input_boolean.kids_youtube
+                - input_boolean.kids_netflix
+                - input_boolean.kids_tiktok
+
+  # Kids tablets follow their allowed window
+  - alias: "Schedule · kids tablets"
+    trigger:
+      - platform: state
+        entity_id: schedule.tablet_allowed
+    action:
+      - choose:
+          - conditions: "{{ trigger.to_state.state == 'on' }}"
+            sequence:
+              - service: input_boolean.turn_on
+                target: { entity_id: input_boolean.kids_tablets_allowed }
+        default:
+          - condition: state
+            entity_id: input_boolean.holiday_mode
+            state: "off"
+          - service: input_boolean.turn_off
+            target: { entity_id: input_boolean.kids_tablets_allowed }
+
+  # When holiday mode ends, snap everything back to whatever the schedules say now
+  - alias: "Schedule · re-assert when holiday mode ends"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.holiday_mode
+        to: "off"
+    action:
+      - service: "input_boolean.turn_{{ 'on' if is_state('schedule.kids_screen_time','on') else 'off' }}"
+        target:
+          entity_id:
+            - input_boolean.kids_youtube
+            - input_boolean.kids_netflix
+            - input_boolean.kids_tiktok
+      - service: "input_boolean.turn_{{ 'on' if is_state('schedule.tablet_allowed','on') else 'off' }}"
+        target: { entity_id: input_boolean.kids_tablets_allowed }
+
+  # Movie night: allow TV YouTube/Netflix now, auto-clear at 23:30
+  - alias: "Schedule · movie night on"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.movie_night
+        to: "on"
+    action:
+      - service: input_boolean.turn_on
+        target:
+          entity_id: [input_boolean.tv_youtube, input_boolean.tv_netflix]
+
+  - alias: "Schedule · movie night auto-off at 23:30"
+    trigger:
+      - platform: time
+        at: "23:30:00"
+    condition:
+      - condition: state
+        entity_id: input_boolean.movie_night
+        state: "on"
+    action:
+      - service: input_boolean.turn_off
+        target: { entity_id: input_boolean.movie_night }
+      - service: input_boolean.turn_off
+        target:
+          entity_id: [input_boolean.tv_youtube, input_boolean.tv_netflix]

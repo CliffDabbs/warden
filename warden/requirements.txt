@@ -1,0 +1,14 @@
+# Warden runtime deps — pinned to versions verified on Windows-ARM64 / Python 3.14
+# and available as manylinux wheels for the container. No C/C++ build tools needed.
+fastapi==0.139.2
+uvicorn==0.51.0            # plain (not [standard]) — avoids httptools/uvloop C builds
+wsproto==1.3.2            # pure-python websockets for uvicorn
+pydantic==2.13.4
+httpx==0.28.1
+APScheduler==3.11.3
+croniter==6.2.4
+anthropic==0.117.1        # optional at runtime; rules fall back to deterministic parser
+PyYAML==6.0.3
+python-dotenv==1.2.2
+jinja2==3.1.6
+playwright==1.61.0        # scraping; only needed when a source runs for real (container)

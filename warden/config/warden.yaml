@@ -1,0 +1,117 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# WARDEN — single source of truth for the parental-control hub.
+#   groups   : device groupings + always-on AdGuard baseline
+#   clients  : real devices (AdGuard clients, matched by name), mapped to a group
+#   services : the on/off-able services (each a valid AdGuard blocked-service id)
+#   subjects : people (drive rules like "when luke has finished atom learning")
+#   sources  : pluggable data collectors (scrapers) that emit signals
+#   signals  : the vocabulary the plain-English rule compiler can reference
+# Edit this file; the app hot-reloads it. AdGuard creds come from .env, never here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+adguard:
+  url: http://10.7.11.29        # overridden by ADGUARD_URL if set
+  # creds via .env: ADGUARD_USER / ADGUARD_PASS ; mode via ADGUARD_MODE
+
+# Device groups. 'baseline' = always-on "fully controlled" settings (never toggled
+# at runtime). 'default_blocked' = services blocked when a device is first created.
+groups:
+  kids:
+    tag: user_child             # AdGuard client tag (usable in $ctag custom rules)
+    baseline: { safe_search: true, parental: true, safebrowsing: true }
+    default_blocked: [youtube, tiktok, roblox]
+  tv:
+    baseline: { safe_search: false, parental: false, safebrowsing: false }
+    default_blocked: [youtube]
+
+# Real devices. 'name' must match the AdGuard client name exactly. 'subject' is
+# optional and links a device to a person.
+clients:
+  - { name: "Asta iPad",      group: kids, ids: ["10.7.11.31"], subject: asta }
+  # Luke's tablet — add its DHCP-reserved IP here when provisioned, then it joins
+  # the kids group automatically and Luke's Atom signal will gate it.
+  # - { name: "Luke iPad",    group: kids, ids: ["10.7.11.33"], subject: luke }
+  - { name: "Living Room TV", group: tv,   ids: ["10.7.11.32"] }
+  - { name: "Shield",         group: tv,   ids: ["10.7.11.30"] }
+
+# Each service becomes a toggle in the UI, per listed group. 'id' must be a valid
+# AdGuard blocked-service id (there are 136 available; see /control/blocked_services/all).
+services:
+  - { id: youtube, name: YouTube, icon: youtube,   groups: [kids, tv] }
+  - { id: netflix, name: Netflix, icon: film,      groups: [kids, tv] }
+  - { id: tiktok,  name: TikTok,  icon: music,     groups: [kids] }
+  - { id: roblox,  name: Roblox,  icon: gamepad,   groups: [kids] }
+  - { id: discord, name: Discord, icon: message,   groups: [kids] }
+
+# People. Contexts are date-driven (e.g. class rollover) so profiles follow the
+# child automatically — mirrors the digest-platform subject-profile design.
+subjects:
+  - id: luke
+    name: Luke Dabbs
+    contexts:
+      - { label: "Jellyfish Class", effective_to:   "2026-09-02" }
+      - { label: "Swordfish Class", effective_from: "2026-09-02" }
+  - id: asta
+    name: Asta Dabbs
+
+# Pluggable data sources. Each names an adapter package under warden/adapters/.
+# Adding a source = add an adapter + a block here; the core never changes.
+sources:
+  atom:
+    adapter: atom
+    display_name: "Atom Learning"
+    enabled: true
+    schedule: "*/30 6-21 * * *"     # cron: every 30 min, 6am–9pm
+    subject: luke
+    secrets: {}                     # Google SSO — no username/password; the session is captured
+    options:
+      api_base: "https://api.atomlearning.com"
+      app_base: "https://app.atomlearning.com"
+      # Capture the Google session once:  python -m warden.adapters.atom.login
+      # (writes this cookie-jar file; the adapter reuses it headlessly).
+      state_file: "data/atom_state.json"
+      student_id: "_18788523414932504"   # Luke (from recon); blank = auto-discover per account
+      tz: "Europe/London"
+      daily_target_islands: 1            # topics completed today to count as "did learning"
+      require_assignments_done: true     # also require parent-set work not left unstarted
+  weduc:
+    adapter: weduc
+    display_name: "Weduc / ReachMoreParents"
+    enabled: false                  # enable once creds are set
+    schedule: "0 7,13,18 * * *"     # 3x daily
+    subject: luke
+    secrets: { username: WEDUC_USERNAME, password: WEDUC_PASSWORD }
+    options:
+      base_url: "https://ui.app.weduc.co.uk"
+
+# Signal vocabulary — what sources emit and what plain-English rules can name.
+# The rule compiler maps free text onto these keys. type: bool | number | string.
+signals:
+  - key: "atom.luke.daily_complete"
+    type: bool
+    source: atom
+    subject: luke
+    describe: "Luke has done his set Atom work and practised today"
+  - key: "atom.luke.islands_completed_today"
+    type: number
+    source: atom
+    subject: luke
+    describe: "Number of Atom topics Luke has completed today"
+  - key: "atom.luke.assignments_outstanding"
+    type: number
+    source: atom
+    subject: luke
+    describe: "Parent-set Atom work Luke has not started"
+  - key: "weduc.luke.forms_outstanding"
+    type: number
+    source: weduc
+    subject: luke
+    describe: "Number of outstanding Weduc forms for Luke"
+
+# Rules the system ships with (also editable/creatable in the UI). Each is authored
+# in plain English and compiled to a typed AST on load. These three are the user's
+# stated examples — they seed the demo.
+rules:
+  - "At 8pm every day, disable all kids devices"
+  - "At 8pm every day, block YouTube for the kids"
+  - "When Luke has completed his Atom Learning, allow YouTube for the kids"

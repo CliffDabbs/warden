@@ -1,0 +1,125 @@
+# AdGuard per-service on/off switches, driven from Home Assistant.
+# Supersedes the old youtube_tv.yaml.
+#
+# Model:  switch ON = service ALLOWED, switch OFF = service BLOCKED.
+# HA owns each client's blocked_services array; SafeSearch / parental / blocklists
+# stay global or static in AdGuard (see docs/05-adguard-rules.md).
+#
+# Before use:
+#   1. Add each device as a Client in AdGuard (by IP). Give kids' devices the tag 'user_child'.
+#   2. Client JSON shape (confirmed on AdGuard v0.107.77): "blocked_services" is a flat
+#        array of IDs, e.g. ["youtube","netflix"]. That's what this package sends.
+#   3. List valid service IDs (AdGuard is on port 80 here, not 3000):
+#        curl.exe -u 'cliff:PASS' http://10.7.11.29/control/blocked_services/all
+#      Confirmed available: youtube, netflix, tiktok, instagram, snapchat, discord, twitch,
+#                   reddit, disneyplus, hulu, roblox, epic_games, steam, spotify, playstation,
+#                   xboxlive, nintendo, samsung_tv_plus  (full list from the API call above)
+#
+# secrets.yaml needs (NOTE: quote the password - it starts with '@', which YAML reserves):
+#   adguard_user: "cliff"
+#   adguard_pass: "<your-adguard-password>"   # quote it; do NOT commit the real value
+#
+# CAVEAT: /control/clients/update overwrites the WHOLE client object, so this minimal PUT
+# resets that client to use_global_settings=true and clears its tags/per-client settings.
+# => Keep the kids "safe baseline" GLOBAL (Safe Search + blocklists), OR tell me and I'll
+#    switch to a full-object PUT that also re-asserts tags/safe_search per client.
+
+input_boolean:
+  # --- TVs (default ON = allowed) ---
+  tv_youtube:   { name: "TV · YouTube",  icon: mdi:youtube }
+  tv_netflix:   { name: "TV · Netflix",  icon: mdi:netflix }
+  # --- Kids (default OFF = blocked) ---
+  kids_youtube: { name: "Kids · YouTube", icon: mdi:youtube }
+  kids_netflix: { name: "Kids · Netflix", icon: mdi:netflix }
+  kids_tiktok:  { name: "Kids · TikTok",  icon: mdi:music-note }
+
+rest_command:
+  adguard_update_client:
+    url: "http://10.7.11.29/control/clients/update"   # AdGuard LXC, admin UI on port 80
+    method: POST
+    username: !secret adguard_user
+    password: !secret adguard_pass
+    content_type: "application/json"
+    payload: >
+      {"name": {{ name | to_json }},
+       "data": {"name": {{ name | to_json }},
+                "ids": {{ ids | to_json }},
+                "use_global_settings": true,
+                "use_global_blocked_services": false,
+                "blocked_services": {{ blocked | to_json }}}}
+
+script:
+  adguard_sync_tvs:
+    alias: AdGuard sync TVs
+    sequence:
+      - variables:
+          # services that are BLOCKED = switches that are OFF
+          blocked: >-
+            {{ ['youtube' if not is_state('input_boolean.tv_youtube','on') else '',
+                'netflix' if not is_state('input_boolean.tv_netflix','on') else '']
+               | select | list }}
+      - repeat:
+          for_each:
+            - { name: "Living Room TV", ids: ["10.0.20.51"] }   # TODO: your TV client names + IPs
+            - { name: "Bedroom TV",     ids: ["10.0.20.52"] }
+          sequence:
+            - service: rest_command.adguard_update_client
+              data:
+                name: "{{ repeat.item.name }}"
+                ids: "{{ repeat.item.ids }}"
+                blocked: "{{ blocked }}"
+
+  adguard_sync_kids:
+    alias: AdGuard sync kids
+    sequence:
+      - variables:
+          blocked: >-
+            {{ ['youtube' if not is_state('input_boolean.kids_youtube','on') else '',
+                'netflix' if not is_state('input_boolean.kids_netflix','on') else '',
+                'tiktok'  if not is_state('input_boolean.kids_tiktok','on')  else '']
+               | select | list }}
+      - repeat:
+          for_each:
+            - { name: "Kids iPad",     ids: ["10.0.30.21"] }    # TODO: your kids client names + IPs
+            - { name: "Kids Tablet 2", ids: ["10.0.30.22"] }
+          sequence:
+            - service: rest_command.adguard_update_client
+              data:
+                name: "{{ repeat.item.name }}"
+                ids: "{{ repeat.item.ids }}"
+                blocked: "{{ blocked }}"
+
+automation:
+  - alias: "AdGuard · sync TVs on switch change"
+    trigger:
+      - platform: state
+        entity_id: [input_boolean.tv_youtube, input_boolean.tv_netflix]
+    action:
+      - service: script.adguard_sync_tvs
+
+  - alias: "AdGuard · sync kids on switch change"
+    trigger:
+      - platform: state
+        entity_id: [input_boolean.kids_youtube, input_boolean.kids_netflix, input_boolean.kids_tiktok]
+    action:
+      - service: script.adguard_sync_kids
+
+  # Re-assert HA's desired state after a restart (keeps AdGuard in sync with the switches)
+  - alias: "AdGuard · re-assert all on HA start"
+    trigger:
+      - platform: homeassistant
+        event: start
+    action:
+      - service: script.adguard_sync_tvs
+      - service: script.adguard_sync_kids
+
+  # Optional: TVs auto re-block YouTube 3h after you allow it
+  - alias: "AdGuard · auto re-block TV YouTube after 3h"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.tv_youtube
+        to: "on"
+        for: "03:00:00"
+    action:
+      - service: input_boolean.turn_off
+        target: { entity_id: input_boolean.tv_youtube }

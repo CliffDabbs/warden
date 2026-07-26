@@ -1,0 +1,55 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SINGLE SOURCE OF TRUTH for screen-time / parental controls.
+# Edit this file, then:   python deploy.py --dry-run   (preview)
+#                         python deploy.py             (apply)
+# ─────────────────────────────────────────────────────────────────────────────
+
+adguard:
+  url: http://10.7.11.29          # AdGuard admin API (port 80). Creds come from .env / secrets.
+
+# Device groups. 'baseline' = always-on "fully controlled" settings.
+# 'default_blocked' = services blocked by default (their HA switch starts OFF).
+groups:
+  kids:
+    tag: user_child               # AdGuard client tag (usable in $ctag custom rules)
+    baseline:
+      safe_search: true
+      parental: true
+      safebrowsing: true
+    default_blocked: [youtube, tiktok, roblox]
+  tv:
+    baseline:
+      safe_search: false
+      parental: false
+      safebrowsing: false
+    default_blocked: [youtube]
+
+# Devices. Match 'name' to how you want them shown; 'ids' are IPs (or MACs).
+# POC: three real DHCP-reserved devices. Add more lines here as you expand.
+clients:
+  - { name: "Asta iPad",      group: kids, ids: ["10.7.11.31"] }   # 94:bf:2d:eb:b1:b1
+  - { name: "Living Room TV", group: tv,   ids: ["10.7.11.32"] }   # 10:2b:41:6d:6b:3e  (Samsung)
+  - { name: "Shield",         group: tv,   ids: ["10.7.11.30"] }   # 00:04:4b:f1:2b:bb  (NVIDIA Shield)
+
+# Each service becomes a Home Assistant switch, per listed group.
+# 'id' must be a valid AdGuard blocked-service id (see docs/05 for the full list).
+services:
+  - { id: youtube, name: YouTube, icon: "mdi:youtube",    groups: [kids, tv] }
+  - { id: netflix, name: Netflix, icon: "mdi:netflix",    groups: [kids, tv] }
+  - { id: tiktok,  name: TikTok,  icon: "mdi:music-note", groups: [kids] }
+  - { id: roblox,  name: Roblox,  icon: "mdi:robot",      groups: [kids] }
+
+# Weekly windows. Inside the window the 'allow' services are ON (allowed);
+# outside, they're OFF (blocked) unless Holiday mode is on.
+schedules:
+  kids_screen_time:
+    group: kids
+    allow: [youtube, netflix, tiktok, roblox]
+    weekly:
+      mon-fri: [{ from: "16:00", to: "19:00" }]
+      sat-sun: [{ from: "09:00", to: "19:00" }]
+
+# Ad-hoc override switches.
+overrides:
+  - { name: movie_night, title: "Movie night", icon: "mdi:movie-open",
+      group: tv, services: [youtube, netflix], auto_off: "23:30" }
