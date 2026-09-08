@@ -314,6 +314,31 @@ takes effect within seconds rather than at the next hourly poll. A rule can stil
 plain English ("Monday 1/7th complete, Tuesday 2/7ths…") — it reads the weekly total from
 the same place and Warden's own split doesn't override it.
 
+### Seeing exactly what the model was asked
+
+Warden asks a model to do three things: compile a rule you typed, judge a dynamic rule
+against the current state of play, and read the school newsletter. Each of those is a
+decision made in your house on a model's say-so, so each one is recorded in full.
+
+Every call puts a line in **Activity** — `llm_call`, with what it was for (`rule_eval:seed-3`,
+`rule_compile`, `reminders`), the model, the tokens in and out, and how long it took. The
+**prompt ⤢** button on that line opens the exchange:
+
+- **System prompt** — the instructions the model was given.
+- **Sent** — the message itself: the rule text, the world state, the whole thing, exactly
+  as it went out.
+- **Received** — the reply, exactly as it came back (a "copy" button on each).
+
+Failed calls are kept too — a timeout, a reply that was all thinking and no answer,
+malformed JSON — with whatever did come back and the error that ended it. Those are the
+ones worth reading. A retry after bad JSON is its own line, marked *(retry)*, rather than
+hiding behind the answer that eventually worked.
+
+The header has an **LLM calls** checkbox if you want them out of the way; it's on by
+default. Warden keeps the most recent few hundred exchanges — an evaluation prompt is
+tens of thousands of characters, so older ones are trimmed, and their activity lines stay
+even after the transcript behind them has gone.
+
 ### Weduc — automatic
 
 Weduc uses a username and password, so there's nothing to do by hand. Put

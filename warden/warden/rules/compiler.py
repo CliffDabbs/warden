@@ -22,12 +22,13 @@ import json
 import logging
 import re
 import shutil
-from typing import Optional
+import time
+from typing import Any, Optional
 
 from croniter import croniter
 
 from ..config import Settings
-from ..models import ServiceState
+from ..models import LlmCall, ServiceState
 from .schema import (
     Action,
     CompiledRule,
@@ -81,6 +82,26 @@ class RuleCompiler:
         self.vocab = vocab
         self._client = None            # lazily-built AsyncAnthropic
         self._cli_ok: Optional[bool] = None
+        # Set by main.py to ctx.record_llm. Every exchange this class has with a model is
+        # handed to it verbatim, so the Activity feed can show exactly what was asked and
+        # exactly what came back. Left None (tests, scripts) nothing is journalled.
+        self.journal: Optional[Any] = None
+
+    async def _journal(self, purpose: str, backend: str, model: str, system: str,
+                       prompt: str, response: str, started: float,
+                       usage: Optional[dict] = None, error: str = "") -> None:
+        """Hand one exchange to the recorder. Never fatal to the call it describes."""
+        if self.journal is None:
+            return
+        try:
+            await self.journal(LlmCall(
+                purpose=purpose, backend=backend, model=model, system=system,
+                prompt=prompt, response=response, ok=not error, error=error,
+                ms=int((time.perf_counter() - started) * 1000),
+                input_tokens=(usage or {}).get("input_tokens"),
+                output_tokens=(usage or {}).get("output_tokens")))
+        except Exception:
+            log.exception("could not journal the %s LLM call", purpose)
 
     # ── public API ───────────────────────────────────────────────────────────
     async def compile(self, text: str) -> CompiledRule:
@@ -118,7 +139,8 @@ class RuleCompiler:
 
     async def complete_json(self, system: str, user: str,
                             model: Optional[str] = None,
-                            max_tokens: int = DEFAULT_MAX_TOKENS) -> dict:
+                            max_tokens: int = DEFAULT_MAX_TOKENS,
+                            purpose: str = "llm") -> dict:
         """Generic LLM call returning parsed JSON, retried once if the JSON is malformed.
 
         Models occasionally emit not-quite-valid JSON (an unescaped quote, a stray
@@ -127,61 +149,91 @@ class RuleCompiler:
         server error.
 
         `model` overrides the configured one — the evaluator uses it so its harder
-        reasoning can run on a stronger model than the compiler needs.
+        reasoning can run on a stronger model than the compiler needs. `purpose` is what
+        the exchange is filed under in the activity feed (rule_eval:<id>, reminders, …).
+
+        Both attempts are journalled, so a retry shows up AS a retry rather than hiding
+        behind whichever answer finally parsed.
         """
         try:
-            return await self._complete_json_once(system, user, model, max_tokens)
+            return await self._complete_json_once(system, user, model, max_tokens, purpose)
         except json.JSONDecodeError as e:
             log.warning("LLM returned malformed JSON (%s); retrying once", e)
             return await self._complete_json_once(
                 system + "\n\nIMPORTANT: your previous reply was not valid JSON. Reply "
                          "with a single valid JSON object and nothing else. Keep string "
                          "values short and escape any quotes inside them.",
-                user, model, max_tokens)
+                user, model, max_tokens, purpose + " (retry)")
 
     async def _complete_json_once(self, system: str, user: str,
                                   model: Optional[str] = None,
-                                  max_tokens: int = DEFAULT_MAX_TOKENS) -> dict:
+                                  max_tokens: int = DEFAULT_MAX_TOKENS,
+                                  purpose: str = "llm") -> dict:
+        """One request, one reply — and a verbatim record of both either way.
+
+        The record is written in a `finally` so a call that fails (a timeout, a reply
+        that was all thinking and no answer, malformed JSON) is journalled with whatever
+        did come back and the error that ended it. Those are exactly the calls worth
+        being able to read afterwards.
+        """
         backend = self._backend()
         if backend == "none":
             raise RuntimeError("no LLM backend (set ANTHROPIC_API_KEY or install the claude CLI)")
         use_model = model or self.settings.llm_model
-        if backend == "api":
-            from anthropic import AsyncAnthropic
-            if self._client is None:
-                self._client = AsyncAnthropic(api_key=self.settings.anthropic_api_key)
-            resp = await self._client.messages.create(
-                model=use_model, max_tokens=max_tokens,
-                system=system, messages=[{"role": "user", "content": user}])
-            text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
-            # A reasoning model spends the budget on thinking FIRST, so too small a cap
-            # returns a reply that is all thinking and no answer — zero text blocks and
-            # stop_reason "max_tokens". That surfaced as an unreadable
-            # "Expecting value: line 1 column 1" and lost a seed-3 evaluation on
-            # 2026-08-27. Name it instead, so the cause is in the audit line.
-            if not text.strip():
-                raise ValueError(
-                    f"{use_model} returned no text (stop_reason={resp.stop_reason}; "
-                    f"{resp.usage.output_tokens} output tokens). If this is a thinking "
-                    f"model, max_tokens={max_tokens} left no room for the answer.")
-        else:  # cli
-            prompt = system + "\n\n" + user
-            args = [self.settings.claude_cli, "-p", "--output-format", "json"]
-            m = self._cli_model(use_model)
-            if m:
-                args += ["--model", m]
-            proc = await asyncio.create_subprocess_exec(
-                *args, stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            try:
-                out, err = await asyncio.wait_for(
-                    proc.communicate(prompt.encode("utf-8")), timeout=CLI_TIMEOUT)
-            except asyncio.TimeoutError:
-                proc.kill(); raise ValueError("claude CLI timed out")
-            if proc.returncode != 0:
-                raise ValueError(f"claude CLI exit {proc.returncode}: {err.decode('utf-8','ignore')[:200]}")
-            text = (json.loads(out.decode("utf-8")) or {}).get("result", "")
-        return json.loads(self._extract_json(text))
+        started = time.perf_counter()
+        # what actually goes on the wire: the API takes a system prompt and a user
+        # message, the CLI takes one concatenated prompt on stdin. Journal it the way
+        # it was sent, not the way it was assembled.
+        sent_system, sent, text, usage, failure = system, user, "", None, ""
+        try:
+            if backend == "api":
+                from anthropic import AsyncAnthropic
+                if self._client is None:
+                    self._client = AsyncAnthropic(api_key=self.settings.anthropic_api_key)
+                resp = await self._client.messages.create(
+                    model=use_model, max_tokens=max_tokens,
+                    system=system, messages=[{"role": "user", "content": user}])
+                text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+                usage = {"input_tokens": getattr(resp.usage, "input_tokens", None),
+                         "output_tokens": getattr(resp.usage, "output_tokens", None)}
+                # A reasoning model spends the budget on thinking FIRST, so too small a cap
+                # returns a reply that is all thinking and no answer — zero text blocks and
+                # stop_reason "max_tokens". That surfaced as an unreadable
+                # "Expecting value: line 1 column 1" and lost a seed-3 evaluation on
+                # 2026-08-27. Name it instead, so the cause is in the audit line.
+                if not text.strip():
+                    raise ValueError(
+                        f"{use_model} returned no text (stop_reason={resp.stop_reason}; "
+                        f"{resp.usage.output_tokens} output tokens). If this is a thinking "
+                        f"model, max_tokens={max_tokens} left no room for the answer.")
+            else:  # cli
+                prompt = system + "\n\n" + user
+                sent_system, sent = "", prompt
+                args = [self.settings.claude_cli, "-p", "--output-format", "json"]
+                m = self._cli_model(use_model)
+                if m:
+                    args += ["--model", m]
+                proc = await asyncio.create_subprocess_exec(
+                    *args, stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                try:
+                    out, err = await asyncio.wait_for(
+                        proc.communicate(prompt.encode("utf-8")), timeout=CLI_TIMEOUT)
+                except asyncio.TimeoutError:
+                    proc.kill(); raise ValueError("claude CLI timed out")
+                if proc.returncode != 0:
+                    raise ValueError(f"claude CLI exit {proc.returncode}: {err.decode('utf-8','ignore')[:200]}")
+                raw = out.decode("utf-8")
+                text = raw                       # journal the raw envelope if it won't parse
+                text = (json.loads(raw) or {}).get("result", "")
+            return json.loads(self._extract_json(text))
+        except Exception as e:
+            failure = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            await self._journal(purpose, self.backend_name(), use_model,
+                                sent_system, sent,
+                                text, started, usage, failure)
 
     def backend_name(self) -> str:
         """Which compile path is active — surfaced in the UI/About."""
@@ -483,22 +535,36 @@ class RuleCompiler:
         if self._client is None:
             self._client = AsyncAnthropic(api_key=self.settings.anthropic_api_key)
 
-        resp = await self._client.messages.create(
-            model=self.settings.llm_model,          # default: claude-haiku-4-5-20251001
-            max_tokens=1024,
-            system=self._system_prompt(),
-            messages=[{"role": "user", "content": text}],
-        )
-        payload = "".join(
-            b.text for b in resp.content if getattr(b, "type", None) == "text"
-        )
-        data = json.loads(self._extract_json(payload))
-        rule = CompiledRule.model_validate(data)
+        system = self._system_prompt()
+        started = time.perf_counter()
+        payload, usage, failure = "", None, ""
+        try:
+            resp = await self._client.messages.create(
+                model=self.settings.llm_model,          # default: claude-haiku-4-5-20251001
+                max_tokens=1024,
+                system=system,
+                messages=[{"role": "user", "content": text}],
+            )
+            payload = "".join(
+                b.text for b in resp.content if getattr(b, "type", None) == "text"
+            )
+            usage = {"input_tokens": getattr(resp.usage, "input_tokens", None),
+                     "output_tokens": getattr(resp.usage, "output_tokens", None)}
+            data = json.loads(self._extract_json(payload))
+            rule = CompiledRule.model_validate(data)
 
-        # sanity-check any cron the model produced; a bad cron falls back
-        if isinstance(rule.trigger, ScheduleTrigger) and not croniter.is_valid(rule.trigger.cron):
-            raise ValueError(f"LLM produced invalid cron: {rule.trigger.cron!r}")
-        return rule
+            # sanity-check any cron the model produced; a bad cron falls back
+            if isinstance(rule.trigger, ScheduleTrigger) and not croniter.is_valid(rule.trigger.cron):
+                raise ValueError(f"LLM produced invalid cron: {rule.trigger.cron!r}")
+            return rule
+        except Exception as e:
+            failure = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            # compile() swallows every failure and quietly uses the parser instead, so
+            # without this line a rule that the model got wrong leaves no trace at all.
+            await self._journal("rule_compile", "anthropic-api", self.settings.llm_model,
+                                system, text, payload, started, usage, failure)
 
     # ── CLI path (Claude Code, no API key) ───────────────────────────────────
     async def _compile_cli(self, text: str) -> CompiledRule:
@@ -518,30 +584,42 @@ class RuleCompiler:
         if model:
             args += ["--model", model]
 
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        started = time.perf_counter()
+        result_text, failure = "", ""
         try:
-            out, err = await asyncio.wait_for(
-                proc.communicate(prompt.encode("utf-8")), timeout=CLI_TIMEOUT
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise ValueError("claude CLI timed out")
-        if proc.returncode != 0:
-            raise ValueError(f"claude CLI exit {proc.returncode}: {err.decode('utf-8', 'ignore')[:200]}")
+            try:
+                out, err = await asyncio.wait_for(
+                    proc.communicate(prompt.encode("utf-8")), timeout=CLI_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                raise ValueError("claude CLI timed out")
+            if proc.returncode != 0:
+                raise ValueError(f"claude CLI exit {proc.returncode}: {err.decode('utf-8', 'ignore')[:200]}")
 
-        envelope = json.loads(out.decode("utf-8"))
-        result_text = envelope.get("result") if isinstance(envelope, dict) else None
-        if not result_text:
-            raise ValueError("claude CLI returned no result")
-        rule = CompiledRule.model_validate(json.loads(self._extract_json(result_text)))
-        if isinstance(rule.trigger, ScheduleTrigger) and not croniter.is_valid(rule.trigger.cron):
-            raise ValueError(f"CLI produced invalid cron: {rule.trigger.cron!r}")
-        return rule
+            raw = out.decode("utf-8")
+            result_text = raw                    # journal the raw envelope if it won't parse
+            envelope = json.loads(raw)
+            result_text = envelope.get("result") if isinstance(envelope, dict) else None
+            if not result_text:
+                result_text = raw
+                raise ValueError("claude CLI returned no result")
+            rule = CompiledRule.model_validate(json.loads(self._extract_json(result_text)))
+            if isinstance(rule.trigger, ScheduleTrigger) and not croniter.is_valid(rule.trigger.cron):
+                raise ValueError(f"CLI produced invalid cron: {rule.trigger.cron!r}")
+            return rule
+        except Exception as e:
+            failure = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            await self._journal("rule_compile", "claude-cli", model or "cli default",
+                                "", prompt, result_text or "", started, None, failure)
 
     def _cli_model(self, model: Optional[str] = None) -> Optional[str]:
         """Map a model id to a CLI alias (cheap by default)."""

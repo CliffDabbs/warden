@@ -705,7 +705,8 @@ class ReminderBuilder:
 
         user = self._llm_user_message(pool, today, subject, child_class)
         model = self.ctx.settings.eval_model or None
-        data = await compiler.complete_json(_SYSTEM, user, model=model)
+        data = await compiler.complete_json(_SYSTEM, user, model=model,
+                                            purpose="reminders")
         data["_model"] = model or self.ctx.settings.llm_model
         self.ctx.db.set_kv(key, json.dumps(data, default=str))
 

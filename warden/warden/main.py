@@ -80,6 +80,10 @@ def build_app() -> FastAPI:
     ctx.overrides = OverrideKeeper(ctx)
     ctx.hosts = HostControl(ctx)
     ctx.compiler = RuleCompiler(settings, build_vocabulary(config))
+    # Every prompt Warden sends and every reply it gets is recorded and shown in the
+    # Activity feed; without this line the compiler makes the calls but nothing keeps
+    # them, and "why did it decide that?" has no answer after the fact.
+    ctx.compiler.journal = ctx.record_llm
     ctx.evaluator = RuleEvaluator(ctx)
     ctx.engine = RuleEngine(ctx)
     ctx.reader = DocumentReader(ctx)

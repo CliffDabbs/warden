@@ -325,11 +325,38 @@ class StateSnapshot(BaseModel):
 class AuditEntry(BaseModel):
     id: Optional[int] = None
     at: datetime = Field(default_factory=utcnow)
-    actor: str = "system"                         # system | user | rule:<id> | source:<key>
+    actor: str = "system"                         # system | user | rule:<id> | source:<key> | llm
     action: str = ""                              # set_service | block_group | add_rule | source_run ...
     target: str = ""
     detail: str = ""
     ok: bool = True
+    # Pointer to a bigger record this line summarises, e.g. "llm:42" — the full prompt
+    # and reply of an LLM call, which the UI opens from the row rather than inlining.
+    ref: str = ""
+
+
+class LlmCall(BaseModel):
+    """One exchange with the model, kept verbatim.
+
+    Every rule Warden compiles, every dynamic rule it evaluates and every reminder it
+    reads is a model's opinion acted on in someone's house, so "what exactly did you ask
+    it, and what exactly did it say?" has to be answerable afterwards — from the Activity
+    feed, without a debugger or a log file. Stored as sent: the system prompt, the user
+    message and the reply text, un-summarised.
+    """
+    id: Optional[int] = None
+    at: datetime = Field(default_factory=utcnow)
+    purpose: str = ""                             # rule_compile | rule_eval:<id> | reminders | newsletter
+    backend: str = ""                             # anthropic-api | claude-cli
+    model: str = ""
+    system: str = ""                              # system prompt, verbatim
+    prompt: str = ""                              # user message, verbatim
+    response: str = ""                            # reply text, verbatim ("" if the call failed)
+    ok: bool = True
+    ms: int = 0
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    error: str = ""
 
 
 class SourceRun(BaseModel):

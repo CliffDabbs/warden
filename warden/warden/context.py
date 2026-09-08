@@ -12,12 +12,15 @@ doesn't import them and there's no cycle.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Optional
 
 from .config import Settings
 from .db import DB
-from .models import AuditEntry, WardenConfig, utcnow
+from .models import AuditEntry, LlmCall, WardenConfig, utcnow
 from .signals.bus import SignalBus
+
+log = logging.getLogger("warden.context")
 
 
 class EventHub:
@@ -63,10 +66,37 @@ class AppContext:
 
     # ── audit + change notification ──────────────────────────────────────────
     async def audit(self, actor: str, action: str, target: str = "",
-                    detail: str = "", ok: bool = True) -> None:
-        entry = AuditEntry(actor=actor, action=action, target=target, detail=detail, ok=ok)
+                    detail: str = "", ok: bool = True, ref: str = "") -> None:
+        entry = AuditEntry(actor=actor, action=action, target=target, detail=detail,
+                           ok=ok, ref=ref)
         self.db.add_audit(entry)
         await self.events.publish({"type": "audit", "entry": entry.model_dump(mode="json")})
+
+    async def record_llm(self, call: LlmCall) -> int:
+        """Store an LLM exchange verbatim, and put a line in the activity feed for it.
+
+        Every model call Warden makes comes through here — compiling a rule, evaluating
+        a dynamic one, reading the newsletter. The feed is where the household looks to
+        see what Warden did and why, and "the model decided" is only an answer if the
+        exact question and the exact reply are one click from that line: `ref` carries
+        the id, GET /api/llm/{id} serves the transcript.
+
+        Never let the bookkeeping break the work it describes — the call has already
+        happened by the time we get here, so a failure to record is logged, not raised.
+        """
+        try:
+            call_id = self.db.add_llm_call(call)
+        except Exception:
+            log.exception("could not record the LLM call (%s)", call.purpose)
+            return 0
+        bits = [b for b in (call.model, call.backend) if b]
+        if call.input_tokens or call.output_tokens:
+            bits.append(f"{call.input_tokens or 0} in / {call.output_tokens or 0} out")
+        bits.append(f"{call.ms / 1000:.1f}s")
+        detail = " · ".join(bits) + (f" — {call.error}" if call.error else "")
+        await self.audit("llm", "llm_call", call.purpose or "llm", detail,
+                         ok=call.ok, ref=f"llm:{call_id}")
+        return call_id
 
     async def after_change(self, reason: str = "") -> None:
         """Recompute the dashboard snapshot and push it to WS clients."""

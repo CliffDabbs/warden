@@ -483,7 +483,8 @@ textarea::placeholder, input::placeholder { color: var(--text-faint); }
 /* ── activity ──────────────────────────────────────────────────────────────*/
 .audit-list { display: flex; flex-direction: column; gap: 2px; }
 .audit-row {
-  display: grid; grid-template-columns: 78px 116px 1fr auto; gap: 12px; align-items: center;
+  /* time · actor · what happened · transcript button (or its empty slot) · ok */
+  display: grid; grid-template-columns: 78px 116px 1fr 86px auto; gap: 12px; align-items: center;
   padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid transparent;
   animation: fadein 0.35s ease;
 }
@@ -498,6 +499,49 @@ textarea::placeholder, input::placeholder { color: var(--text-faint); }
 .audit-ok.y { color: var(--ok); }
 .audit-ok.n { color: var(--danger); }
 @keyframes fadein { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
+
+/* ── LLM calls in the feed, and the transcript popout ──────────────────────*/
+/* A model call is a quieter kind of event than a switch being thrown: it says what
+   Warden asked, not what it changed. Toned down here, but never hidden by default. */
+.audit-row.is-llm .audit-action b { font-weight: 550; color: var(--text-muted); }
+.audit-filter {
+  margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12.5px; color: var(--text-muted); cursor: pointer; user-select: none;
+}
+.audit-filter input { accent-color: var(--accent); }
+.audit-llm-slot { display: block; }
+.audit-llm-btn { font-family: var(--mono); font-size: 11.5px; white-space: nowrap; }
+
+.llm-overlay {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
+  padding: 24px; background: rgba(6, 8, 12, 0.72);
+}
+.llm-card {
+  width: min(980px, 100%); max-height: 86vh; display: flex; flex-direction: column;
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); overflow: hidden;
+}
+.llm-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 16px; border-bottom: 1px solid var(--border-soft);
+}
+.llm-title { margin: 0; font-size: 15px; }
+.llm-body { padding: 14px 16px 18px; overflow-y: auto; }
+.llm-meta { font-family: var(--mono); font-size: 12px; color: var(--text-muted); margin-bottom: 12px; }
+.llm-error {
+  background: var(--danger-soft); border: 1px solid rgba(255,107,107,0.35);
+  border-radius: var(--radius-sm); padding: 8px 10px; font-size: 12.5px; margin-bottom: 12px;
+}
+.llm-section + .llm-section { margin-top: 14px; }
+.llm-section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+.llm-section-title { font-size: 13px; font-weight: 650; }
+.llm-section-head .hint { margin-right: auto; }
+.llm-pre {
+  margin: 0; padding: 10px 12px; max-height: 42vh; overflow: auto;
+  background: var(--surface); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); font-family: var(--mono); font-size: 12px;
+  line-height: 1.5; white-space: pre-wrap; word-break: break-word; color: var(--text);
+}
 
 /* ── about ─────────────────────────────────────────────────────────────────*/
 .about-grid { display: grid; grid-template-columns: 160px 1fr; gap: 10px 18px; padding: 4px 2px; }

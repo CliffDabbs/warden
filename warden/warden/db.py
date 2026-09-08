@@ -1,4 +1,4 @@
-"""SQLite state store — rules, signals, audit, source runs, items, cursors.
+"""SQLite state store — rules, signals, audit, LLM calls, source runs, items, cursors.
 
 Single-file, dependency-free (stdlib sqlite3). Thread-safe via a write lock because
 APScheduler fires jobs on worker threads while FastAPI runs on the event loop.
@@ -16,8 +16,15 @@ from pathlib import Path
 from typing import Optional
 
 from .models import (
-    AuditEntry, DeviceOverride, Signal, SignalType, SourceRun, Item, utcnow,
+    AuditEntry, DeviceOverride, LlmCall, Signal, SignalType, SourceRun, Item, utcnow,
 )
+
+# How many LLM exchanges to keep, and how much of each. A world-state prompt runs to
+# tens of KB, so the log is trimmed on write rather than allowed to grow without bound —
+# recent calls are what anyone actually asks about, and the audit line survives the
+# trim even when the transcript behind it doesn't.
+LLM_LOG_KEEP = 300
+LLM_FIELD_CHARS = 200_000
 from .rules.schema import Rule
 
 # Fields an adapter re-stamps on every collection. They say when we looked, never what
@@ -63,7 +70,17 @@ CREATE TABLE IF NOT EXISTS signal_history (
 CREATE INDEX IF NOT EXISTS ix_sighist_key ON signal_history(key, id DESC);
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    at TEXT, actor TEXT, action TEXT, target TEXT, detail TEXT, ok INTEGER
+    at TEXT, actor TEXT, action TEXT, target TEXT, detail TEXT, ok INTEGER,
+    ref TEXT
+);
+CREATE TABLE IF NOT EXISTS llm_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    purpose TEXT, backend TEXT, model TEXT,
+    system TEXT, prompt TEXT, response TEXT,     -- exactly what was sent and received
+    ok INTEGER NOT NULL DEFAULT 1,
+    ms INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+    error TEXT
 );
 CREATE TABLE IF NOT EXISTS source_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,6 +143,7 @@ class DB:
         """
         wanted = {
             "rules": [("next_check_at", "TEXT"), ("next_check_reason", "TEXT")],
+            "audit": [("ref", "TEXT")],
         }
         for table, cols in wanted.items():
             try:
@@ -241,8 +259,8 @@ class DB:
     def add_audit(self, e: AuditEntry) -> int:
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO audit (at,actor,action,target,detail,ok) VALUES (?,?,?,?,?,?)",
-                (e.at.isoformat(), e.actor, e.action, e.target, e.detail, int(e.ok)),
+                "INSERT INTO audit (at,actor,action,target,detail,ok,ref) VALUES (?,?,?,?,?,?,?)",
+                (e.at.isoformat(), e.actor, e.action, e.target, e.detail, int(e.ok), e.ref),
             )
             self._conn.commit()
             return cur.lastrowid
@@ -253,9 +271,66 @@ class DB:
         ).fetchall()
         return [
             AuditEntry(id=r["id"], at=r["at"], actor=r["actor"], action=r["action"],
-                       target=r["target"], detail=r["detail"], ok=bool(r["ok"]))
+                       target=r["target"], detail=r["detail"], ok=bool(r["ok"]),
+                       ref=(r["ref"] if "ref" in r.keys() else "") or "")
             for r in rows
         ]
+
+    # ── LLM calls (the exact prompt + reply behind an "llm_call" audit line) ──
+    def add_llm_call(self, c: LlmCall) -> int:
+        """Store one exchange and trim the log to the last LLM_LOG_KEEP.
+
+        Truncation is marked in the text itself rather than done silently: a reader has
+        to be able to tell "this is all of it" from "this is the start of it".
+        """
+        def clip(s: str) -> str:
+            s = s or ""
+            return s if len(s) <= LLM_FIELD_CHARS else (
+                s[:LLM_FIELD_CHARS] + f"\n\n… [truncated: {len(s)} characters in total]")
+
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO llm_calls (at,purpose,backend,model,system,prompt,response,"
+                "ok,ms,input_tokens,output_tokens,error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (c.at.isoformat(), c.purpose, c.backend, c.model, clip(c.system),
+                 clip(c.prompt), clip(c.response), int(c.ok), c.ms,
+                 c.input_tokens, c.output_tokens, c.error),
+            )
+            self._conn.execute(
+                "DELETE FROM llm_calls WHERE id <= (SELECT MAX(id) FROM llm_calls) - ?",
+                (LLM_LOG_KEEP,))
+            self._conn.commit()
+            return cur.lastrowid
+
+    def get_llm_call(self, call_id: int) -> Optional[LlmCall]:
+        r = self._conn.execute("SELECT * FROM llm_calls WHERE id=?", (call_id,)).fetchone()
+        return self._llm_row(r) if r else None
+
+    def list_llm_calls(self, limit: int = 50) -> list[LlmCall]:
+        """Newest first, WITHOUT the bodies — a listing, not a transcript dump."""
+        rows = self._conn.execute(
+            "SELECT id,at,purpose,backend,model,ok,ms,input_tokens,output_tokens,error,"
+            "length(system) AS sys_len, length(prompt) AS prompt_len,"
+            "length(response) AS resp_len FROM llm_calls ORDER BY id DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [LlmCall(id=r["id"], at=r["at"], purpose=r["purpose"] or "",
+                        backend=r["backend"] or "", model=r["model"] or "",
+                        ok=bool(r["ok"]), ms=r["ms"] or 0,
+                        input_tokens=r["input_tokens"], output_tokens=r["output_tokens"],
+                        error=r["error"] or "",
+                        system=f"[{r['sys_len'] or 0} characters]",
+                        prompt=f"[{r['prompt_len'] or 0} characters]",
+                        response=f"[{r['resp_len'] or 0} characters]")
+                for r in rows]
+
+    @staticmethod
+    def _llm_row(r) -> LlmCall:
+        return LlmCall(id=r["id"], at=r["at"], purpose=r["purpose"] or "",
+                       backend=r["backend"] or "", model=r["model"] or "",
+                       system=r["system"] or "", prompt=r["prompt"] or "",
+                       response=r["response"] or "", ok=bool(r["ok"]), ms=r["ms"] or 0,
+                       input_tokens=r["input_tokens"], output_tokens=r["output_tokens"],
+                       error=r["error"] or "")
 
     # ── source runs ──────────────────────────────────────────────────────────
     def start_run(self, source: str) -> int:

@@ -26,8 +26,11 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Any, Optional
+
+from .models import LlmCall
 
 log = logging.getLogger("warden.documents")
 
@@ -139,16 +142,52 @@ class DocumentReader:
             })
 
         client = AsyncAnthropic(api_key=self.ctx.settings.anthropic_api_key)
-        resp = await client.messages.create(
-            model=self.ctx.settings.llm_model, max_tokens=3000,
-            system=_SYSTEM, messages=[{"role": "user", "content": blocks}])
-        payload = "".join(b.text for b in resp.content
-                          if getattr(b, "type", None) == "text")
+        started = time.perf_counter()
+        payload, usage, failure = "", None, ""
+        try:
+            resp = await client.messages.create(
+                model=self.ctx.settings.llm_model, max_tokens=3000,
+                system=_SYSTEM, messages=[{"role": "user", "content": blocks}])
+            payload = "".join(b.text for b in resp.content
+                              if getattr(b, "type", None) == "text")
+            usage = {"input_tokens": getattr(resp.usage, "input_tokens", None),
+                     "output_tokens": getattr(resp.usage, "output_tokens", None)}
+        except Exception as e:
+            failure = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            # This is the one call that doesn't go through the compiler, so it records
+            # itself. The page images can't be shown as text, so the prompt is journalled
+            # with each one named and sized in its place — everything else verbatim.
+            await self._journal(name, blocks, payload, started, usage, failure)
         digest = json.loads(self._extract_json(payload))
         self._verify_child_mentions(digest, subject_name)
         digest["_meta"] = {"document": name, "pages_read": len(images),
                            "dpi": dpi, "text_chars": len(text)}
         return digest
+
+    async def _journal(self, name: str, blocks: list[dict[str, Any]], response: str,
+                       started: float, usage: Optional[dict], failure: str) -> None:
+        """Record the exchange for the Activity feed. Never fatal to the read."""
+        try:
+            parts = []
+            for b in blocks:
+                if b.get("type") == "text":
+                    parts.append(b.get("text", ""))
+                else:
+                    src = b.get("source") or {}
+                    kb = len(src.get("data", "")) * 3 // 4096
+                    parts.append(f"[page image — {src.get('media_type', 'image')}, ~{kb} KB]")
+            await self.ctx.record_llm(LlmCall(
+                purpose=f"newsletter:{name}"[:120], backend="anthropic-api",
+                model=self.ctx.settings.llm_model, system=_SYSTEM,
+                prompt="\n\n".join(parts), response=response,
+                ok=not failure, error=failure,
+                ms=int((time.perf_counter() - started) * 1000),
+                input_tokens=(usage or {}).get("input_tokens"),
+                output_tokens=(usage or {}).get("output_tokens")))
+        except Exception:
+            log.exception("could not journal the newsletter read")
 
     @staticmethod
     def _verify_child_mentions(digest: dict[str, Any], subject_name: str) -> None:

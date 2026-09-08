@@ -6,9 +6,9 @@ All served under the /api prefix (added in main.py).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
-from ..models import AdGuardStatus, AuditEntry, StateSnapshot
+from ..models import AdGuardStatus, AuditEntry, LlmCall, StateSnapshot
 
 router = APIRouter()
 
@@ -85,5 +85,34 @@ async def get_config(request: Request) -> dict:
 
 @router.get("/audit")
 async def get_audit(request: Request, limit: int = 100) -> list[AuditEntry]:
-    """Most-recent audit entries (newest first)."""
+    """Most-recent audit entries (newest first).
+
+    An entry's `ref` points at a bigger record it summarises — "llm:42" is an exchange
+    with the model, fetched in full from /llm/42."""
     return request.app.state.ctx.db.list_audit(limit)
+
+
+@router.get("/llm")
+async def list_llm_calls(request: Request, limit: int = 50) -> list[LlmCall]:
+    """Recent LLM exchanges, newest first, WITHOUT their bodies (sizes instead).
+
+    The full text of each is at /llm/{id} — a listing shouldn't ship a megabyte of
+    prompts to draw a table.
+    """
+    return request.app.state.ctx.db.list_llm_calls(limit)
+
+
+@router.get("/llm/{call_id}")
+async def get_llm_call(call_id: int, request: Request) -> LlmCall:
+    """One exchange in full: the system prompt, the message sent, the reply received.
+
+    This is the answer to "why did Warden do that?" for anything a model decided — the
+    Activity row's own button opens it. Kept verbatim, so what you read here is what
+    went over the wire, not a summary of it. The log holds the most recent few hundred
+    calls; older ones are trimmed and return 404 while their audit line remains.
+    """
+    call = request.app.state.ctx.db.get_llm_call(call_id)
+    if call is None:
+        raise HTTPException(status_code=404,
+                            detail=f"no LLM call {call_id} (the log keeps the recent ones)")
+    return call

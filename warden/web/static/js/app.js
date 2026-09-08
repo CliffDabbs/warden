@@ -207,6 +207,8 @@ const store = {
   reminders: null,    // GET /reminders payload (school days, events, forms)
   remindersBusy: false,    // a re-read is in flight (it costs an LLM call)
   remindersAllDays: false, // "show more days" expanded past the first week
+  showLlm: true,      // include the "llm_call" lines in the Activity feed
+  llmOpen: null,      // id of the exchange whose transcript is on screen
 };
 
 /** Merge live Signal(s) into store.signals, keyed by `key`. */
@@ -1771,15 +1773,28 @@ function deviceRow(d) {
 // -- Activity ----------------------------------------------------------------
 function renderActivity() {
   const wrap = h("div", {});
+  const llmCount = store.audit.filter(isLlmRow).length;
   wrap.append(h("div", { class: "section-head" },
     h("h2", {}, "Activity"),
-    h("span", { class: "hint" }, "live audit feed")));
+    h("span", { class: "hint" }, "live audit feed"),
+    // Every model call lands in this feed. They are the noisiest lines in it, so they
+    // can be hidden — but they are on by default: seeing what Warden asked the model,
+    // and what it answered, is the point of recording them.
+    h("label", { class: "audit-filter", title:
+        "Show the model calls Warden made — open one to read the exact prompt and reply" },
+      h("input", {
+        type: "checkbox", checked: store.showLlm,
+        onchange: (e) => { store.showLlm = e.target.checked; render(); },
+      }),
+      ` LLM calls${llmCount ? ` (${llmCount})` : ""}`)));
+  const rows = store.audit.filter((e) => store.showLlm || !isLlmRow(e));
   const list = h("div", { class: "audit-list", id: "auditList" });
-  if (!store.audit.length) list.append(h("p", { class: "empty" }, "No activity recorded yet."));
-  for (const e of store.audit) list.append(auditRow(e));
+  if (!rows.length) list.append(h("p", { class: "empty" }, "No activity recorded yet."));
+  for (const e of rows) list.append(auditRow(e));
   wrap.append(list);
   return wrap;
 }
+const isLlmRow = (e) => e.action === "llm_call";
 function auditRow(e) {
   const actorKind = (e.actor || "").split(":")[0];
   const badgeCls = actorKind === "rule" ? "badge-accent"
@@ -1787,15 +1802,95 @@ function auditRow(e) {
     : actorKind === "user" ? "badge-ok" : "badge-muted";
   // a whole-house protection kill must jump out of the feed, not blend in
   const protOff = e.action === "set_protection" && /^DISABLED/.test(e.detail || "");
-  return h("div", { class: "audit-row" + (e.ok ? "" : " err") + (protOff ? " prot-off" : "") },
+  // Anything the model was asked keeps its transcript; the row carries the id of it.
+  const llmId = /^llm:(\d+)$/.exec(e.ref || "");
+  return h("div", { class: "audit-row" + (e.ok ? "" : " err") + (protOff ? " prot-off" : "")
+                    + (isLlmRow(e) ? " is-llm" : "") },
     h("span", { class: "audit-time" }, fmtTime(e.at)),
     h("span", { class: "audit-actor" }, h("span", { class: "badge " + badgeCls }, e.actor || "system")),
     h("span", { class: "audit-action" },
       h("b", {}, e.action || "—"), " ",
       e.target ? h("span", { class: "a-target" }, e.target) : null,
       e.detail ? h("span", { class: "a-target" }, " — " + e.detail) : null),
+    llmId
+      ? h("button", {
+          class: "btn btn-sm btn-ghost audit-llm-btn", type: "button",
+          title: "Show exactly what was sent to the model, and exactly what came back",
+          onclick: () => openLlmCall(Number(llmId[1])),
+        }, "prompt ⤢")
+      : h("span", { class: "audit-llm-slot" }),
     h("span", { class: "audit-ok " + (e.ok ? "y" : "n") }, e.ok ? "✓" : "✕"),
   );
+}
+
+/* ── the transcript popout ───────────────────────────────────────────────── */
+
+/** Open one LLM exchange in full: system prompt, message sent, reply received.
+ *  Fetched on demand — the feed carries only the id, never the text. */
+async function openLlmCall(id) {
+  const wrap = h("div", { class: "llm-overlay" });
+  const body = h("div", { class: "llm-body" }, h("p", { class: "empty" }, "Loading…"));
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    wrap.remove();
+    store.llmOpen = null;
+  };
+  const onKey = (ev) => { if (ev.key === "Escape") close(); };
+  const card = h("div", { class: "llm-card", role: "dialog", "aria-modal": "true",
+                          "aria-label": "LLM call" },
+    h("div", { class: "llm-head" },
+      h("h3", { class: "llm-title" }, `LLM call #${id}`),
+      h("button", { class: "btn btn-sm", type: "button", onclick: close }, "Close")),
+    body);
+  wrap.append(card);
+  wrap.addEventListener("click", (ev) => { if (ev.target === wrap) close(); });
+  document.addEventListener("keydown", onKey);
+  document.body.append(wrap);
+  store.llmOpen = id;
+
+  try {
+    const c = await API.get(`/llm/${id}`);
+    const meta = [
+      c.purpose, c.model, c.backend,
+      (c.input_tokens != null || c.output_tokens != null)
+        ? `${c.input_tokens || 0} in / ${c.output_tokens || 0} out` : null,
+      c.ms ? `${(c.ms / 1000).toFixed(1)}s` : null,
+      fmtDateTime(c.at),
+    ].filter(Boolean).join("  ·  ");
+    // replaceChildren has no opinion about null — it stringifies it — so build the
+    // list first and drop the sections this call doesn't have.
+    body.replaceChildren(...[
+      h("div", { class: "llm-meta" }, meta),
+      c.error ? h("div", { class: "llm-error" }, c.error) : null,
+      c.system ? llmSection("System prompt", c.system) : null,
+      llmSection("Sent", c.prompt),
+      llmSection(c.ok ? "Received" : "Received (before it failed)", c.response),
+    ].filter(Boolean));
+  } catch (err) {
+    body.replaceChildren(h("p", { class: "empty" },
+      "Couldn't load it: " + err.message
+      + " — the log keeps the most recent few hundred calls."));
+  }
+}
+
+function llmSection(title, text) {
+  const value = text || "";
+  const pre = h("pre", { class: "llm-pre" }, value || "(empty)");
+  const copy = h("button", {
+    class: "btn btn-sm btn-ghost", type: "button",
+    onclick: async () => {
+      try {
+        await navigator.clipboard.writeText(value);
+        copy.textContent = "copied";
+        setTimeout(() => { copy.textContent = "copy"; }, 1200);
+      } catch { toast("Couldn't copy — select the text instead", "error"); }
+    },
+  }, "copy");
+  return h("div", { class: "llm-section" },
+    h("div", { class: "llm-section-head" },
+      h("span", { class: "llm-section-title" }, title),
+      h("span", { class: "hint" }, `${value.length} chars`), copy),
+    pre);
 }
 
 // -- About / Settings --------------------------------------------------------

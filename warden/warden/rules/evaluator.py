@@ -190,7 +190,8 @@ class RuleEvaluator:
         user = (f"RULE:\n{rule.text}\n\nWORLD STATE:\n{json.dumps(world, indent=2, default=str)}"
                 f"\n\nAVAILABLE ACTIONS:\n{json.dumps(catalog, indent=2)}")
         data = await self.ctx.compiler.complete_json(
-            _SYSTEM, user, model=(self.ctx.settings.eval_model or None))
+            _SYSTEM, user, model=(self.ctx.settings.eval_model or None),
+            purpose=f"rule_eval:{rule.id}")
         actions = self._parse_actions(data.get("actions") or [])
         nxt, nxt_why = self._parse_next_check(data)
         return Decision(bool(data.get("condition_met")), str(data.get("reason", "")).strip(),
