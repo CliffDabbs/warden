@@ -362,6 +362,12 @@ class RuleEvaluator:
                 "next_check_at": nxt_iso,
                 "next_check_reason": decision.next_check_reason}
 
+    # How close a rule's own next check has to be before newly-collected data may pull
+    # it forward. A rule checking hourly is watching for exactly that data and should
+    # see it at once; a rule that has said "not until tomorrow" has answered its
+    # question for the day and must be left alone.
+    EARLY_WAKE_WINDOW = timedelta(hours=2)
+
     @staticmethod
     def is_due(rule: Rule, now: Optional[datetime] = None) -> bool:
         """Is this rule due for evaluation?
@@ -370,7 +376,8 @@ class RuleEvaluator:
         future the rule is deliberately asleep, and nothing — not the safety-net tick,
         not a source refresh — should wake it. That is what makes instructions like
         "no need to check while he's at school" actually hold, instead of being
-        overridden by the hourly Atom poll.
+        overridden by the hourly Atom poll. (New data can pull a rule forward, but only
+        inside EARLY_WAKE_WINDOW — see `wakeable_early`.)
         """
         if not rule.next_check_at:
             return True
@@ -381,6 +388,31 @@ class RuleEvaluator:
         if due.tzinfo is None:
             due = due.replace(tzinfo=timezone.utc)
         return (now or utcnow()) >= due
+
+    @classmethod
+    def wakeable_early(cls, rule: Rule, now: Optional[datetime] = None) -> bool:
+        """May a source collection that changed something pull this rule forward?
+
+        Only if it was about to look anyway. The early wake exists for the rule that is
+        WAITING on the data — Luke finishing at 16:52, collected at 17:00, acted on at
+        18:00 was the bug it fixed — and such a rule is checking every hour or so, so
+        its next check is minutes away.
+
+        A rule that has just told us "he's on track, stop early, don't check again until
+        tomorrow at 4pm" is in the opposite position: it has answered its question for
+        the day. Waking it because an unrelated club booking or meal choice moved
+        contradicts the instruction in its own text and pays 20k tokens to be told the
+        same thing again. So a long sleep is honoured; a short one is not.
+        """
+        if not rule.next_check_at:
+            return True
+        try:
+            due = datetime.fromisoformat(rule.next_check_at.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+        return (due - (now or utcnow())) <= cls.EARLY_WAKE_WINDOW
 
     async def _await_collection(self, reason_tag: str) -> None:
         """Let the sources finish gathering before we judge anything on their data.
@@ -435,16 +467,25 @@ class RuleEvaluator:
         return bad
 
     async def evaluate_all(self, reason_tag: str = "tick",
-                           only: Optional[str] = None, force: bool = False) -> list[dict]:
-        """Evaluate dynamic rules that are DUE (unless forced).
+                           only: Optional[str] = None, force: bool = False,
+                           on_data_change: bool = False) -> list[dict]:
+        """Evaluate dynamic rules that are DUE.
 
         `only` restricts to a single rule id — used by the per-rule wake-up job.
+        `force` ignores the schedule entirely (a person asked, or the rule's own wake-up
+        fired). `on_data_change` is the softer kind of urgency: a source collected
+        something new, so rules that were about to look get to look now — and rules that
+        have deliberately gone to sleep for the rest of the day stay asleep. It used to
+        be a blanket force, which meant a rule whose own text says "stop early once he
+        is on track" was re-evaluated on every hourly poll regardless, at 22k tokens a
+        time, to be told again what it had already decided.
         """
         rules = [r for r in self.ctx.db.list_rules()
                  if r.enabled and r.compiled and r.compiled.dynamic
                  and (only is None or r.id == only)]
         if not force:
-            rules = [r for r in rules if self.is_due(r)]
+            rules = [r for r in rules
+                     if self.is_due(r) or (on_data_change and self.wakeable_early(r))]
         if not rules:
             return []
         if not self.available():
@@ -474,7 +515,8 @@ class RuleEvaluator:
         results = []
         for r in rules:
             try:
-                res = await self._evaluate_guarded(r, world, catalog, reason_tag, force)
+                res = await self._evaluate_guarded(r, world, catalog, reason_tag, force,
+                                                   on_data_change)
                 if res is not None:
                     results.append(res)
             except Exception as e:
@@ -489,7 +531,8 @@ class RuleEvaluator:
         return self._locks.setdefault(rule_id, asyncio.Lock())
 
     async def _evaluate_guarded(self, rule: Rule, world: dict, catalog: list[dict],
-                                reason_tag: str, force: bool) -> Optional[dict]:
+                                reason_tag: str, force: bool,
+                                on_data_change: bool = False) -> Optional[dict]:
         """Evaluate a rule at most once per moment, however many paths ask.
 
         Three schedules legitimately land on the same minute: the rule's own
@@ -514,8 +557,10 @@ class RuleEvaluator:
                         return None
                 except ValueError:
                     pass
-            # and re-check dueness against the freshly-read row
-            if not force and not self.is_due(fresh):
+            # and re-check dueness against the freshly-read row, by the same rule the
+            # caller was admitted under
+            if not force and not (self.is_due(fresh)
+                                  or (on_data_change and self.wakeable_early(fresh))):
                 return None
             return await self.evaluate_and_apply(fresh, world, catalog, reason_tag)
 

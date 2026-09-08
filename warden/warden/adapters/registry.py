@@ -439,10 +439,12 @@ class SourceRegistry:
         if run is None:
             run = await self.collect_now(key, live)
         if run.ok and self.ctx.evaluator is not None:
-            # Force when the facts moved since the last sweep — whichever path
-            # collected them. A dynamic rule asleep until its own next check would
-            # otherwise ignore the very data that answers it (Luke finishing at 16:52
-            # was collected at 17:00 and acted on at 18:00).
+            # Tell the evaluator when the facts moved since the last sweep — whichever
+            # path collected them — so a rule that is WAITING on that data sees it at
+            # once (Luke finishing at 16:52 was collected at 17:00 and acted on at
+            # 18:00). It is not a blanket force: a rule that has put itself to sleep
+            # until tomorrow has already answered its question and stays asleep. See
+            # RuleEvaluator.wakeable_early.
             #
             # Peek now, clear only after a sweep that really happened: evaluate_all
             # has refusal paths that RETURN rather than raise (stale source data, no
@@ -451,9 +453,10 @@ class SourceRegistry:
             # never sees. Known narrow limitation (accepted): a rule that evaluated
             # on pre-change data <60s before the sweep is deduped by the evaluator's
             # duplicate guard and catches up on its own next check.
-            force = self._changed_since_eval.get(key, False)
+            changed = self._changed_since_eval.get(key, False)
             try:
-                results = await self.ctx.evaluator.evaluate_all(f"source:{key}", force=force)
+                results = await self.ctx.evaluator.evaluate_all(f"source:{key}",
+                                                                on_data_change=changed)
             except Exception:
                 log.exception("dynamic-rule eval after source %s failed", key)
             else:
