@@ -1274,9 +1274,13 @@ function ruleCard(r) {
       title: r.next_check_reason || "chosen by the AI from this rule's wording",
     }, `next check ${whenAbs(r.next_check_at)}`));
   }
-  if (c && c.warnings && !dyn) for (const w of c.warnings)
-    meta.append(h("span", { class: "badge badge-warn" }, w));
   main.append(meta);
+  // Warnings belong on every rule, dynamic included — "the model couldn't compile this,
+  // a parser did" is exactly the kind of thing that used to be invisible. Long sentences,
+  // so a line of their own rather than a badge.
+  if (c && c.warnings && c.warnings.length)
+    main.append(h("ul", { class: "warn-list" },
+      ...c.warnings.map((w) => h("li", {}, "⚠︎ ", w))));
   if (dyn && r.next_check_reason)
     main.append(h("div", { class: "rule-sum", style: "opacity:.6" },
       "⏱ " + r.next_check_reason));
@@ -1291,7 +1295,24 @@ function ruleCard(r) {
       catch (e) { toast("Toggle failed: " + e.message, "error"); }
     },
   }));
+  // Offered only when this rule's compile has something to say — a stored error, or a
+  // warning like "the model couldn't compile this". Same words, compiled again.
+  const needsRecompile = !!(r.compile_error || (c && c.warnings && c.warnings.length));
   ctl.append(h("div", { class: "rule-btns" },
+    needsRecompile
+      ? h("button", {
+          class: "btn btn-sm", type: "button",
+          title: "Compile this rule again from the same text",
+          onclick: async (e) => {
+            e.target.disabled = true;
+            try {
+              mergeRule(await API.post(`/rules/${r.id}/recompile`));
+              toast("Recompiled", "ok"); render();
+            } catch (err) { toast("Recompile failed: " + err.message, "error"); }
+            finally { e.target.disabled = false; }
+          },
+        }, "Recompile")
+      : null,
     h("button", { class: "btn btn-sm", type: "button",
       onclick: () => editRule(r) }, icon("edit", 13), "Edit"),
     h("button", { class: "btn btn-sm", type: "button", disabled: !c,

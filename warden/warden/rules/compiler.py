@@ -111,14 +111,26 @@ class RuleCompiler:
         """
         backend = self._backend()
         rule: Optional[CompiledRule] = None
+        why = ""
         if backend == "api":
             try: rule = await self._compile_llm(text)
-            except Exception: rule = None
+            except Exception as e: why = f"{type(e).__name__}: {e}"
         elif backend == "cli":
             try: rule = await self._compile_cli(text)
-            except Exception: rule = None
+            except Exception as e: why = f"{type(e).__name__}: {e}"
         if rule is None:
             rule = self.compile_fallback(text)                 # sets .dynamic itself
+            if why:
+                # The parser understands one clause and a clock. When it stands in for a
+                # failed model call the result can be a fraction of what was asked for —
+                # a three-part rule that compiled down to a single service — and the rule
+                # then looks perfectly healthy in the UI. Say what happened, on the rule.
+                log.warning("LLM compile failed (%s); used the fallback parser for %r",
+                            why, text[:80])
+                rule.warnings.insert(0, f"the model could not compile this ({why[:160]}) "
+                                        "— the built-in parser did instead, so check the "
+                                        "actions match what you asked for")
+                rule.confidence = min(rule.confidence, 0.5)
         else:
             rule.dynamic = rule.dynamic or self._is_dynamic(text)
         return rule
@@ -528,6 +540,44 @@ class RuleCompiler:
                     else f"disable all devices for {a.group}")
         return "run action"
 
+    def _rule_from_reply(self, payload: str, text: str) -> CompiledRule:
+        """Turn the model's reply into ONE validated rule.
+
+        An instruction with several moments in it ("at 8pm block …, at 9.15pm unblock …,
+        block again at 11.45pm") is a single household intention, and the model answers
+        it the honest way: one object per moment, in an array. CompiledRule holds one
+        trigger, so that used to surface as `JSONDecodeError: Extra data` and the whole
+        compile fell back to the keyword parser — which caught one clause of three and
+        produced a rule that quietly did almost nothing while looking fine on the card.
+
+        A multi-part answer isn't a failure, it's the model saying this rule is not one
+        cron. Keep it whole and hand it to the live evaluator, which re-reads the text at
+        every wake-up and picks its own next one — the same path a rule like "unblock at
+        08:30 and block again at 15:30" already takes.
+        """
+        data = json.loads(self._extract_json(payload))
+        if isinstance(data, list):
+            if len(data) == 1:
+                data = data[0]
+            elif data:
+                parts = [str(d.get("summary") or "").strip() for d in data
+                         if isinstance(d, dict) and d.get("summary")]
+                return CompiledRule(
+                    trigger=ManualTrigger(
+                        describe="evaluated live, at each moment this rule names"),
+                    actions=[], dynamic=True, confidence=0.8,
+                    summary=" · ".join(parts) or " ".join(text.split())[:140],
+                    warnings=[f"this covers {len(data)} separate moments, so it is "
+                              "evaluated live rather than fired from one schedule"])
+            else:
+                raise ValueError("the model returned an empty list of rules")
+
+        rule = CompiledRule.model_validate(data)
+        # sanity-check any cron the model produced; a bad cron falls back
+        if isinstance(rule.trigger, ScheduleTrigger) and not croniter.is_valid(rule.trigger.cron):
+            raise ValueError(f"LLM produced invalid cron: {rule.trigger.cron!r}")
+        return rule
+
     # ── LLM path ─────────────────────────────────────────────────────────────
     async def _compile_llm(self, text: str) -> CompiledRule:
         from anthropic import AsyncAnthropic
@@ -550,13 +600,7 @@ class RuleCompiler:
             )
             usage = {"input_tokens": getattr(resp.usage, "input_tokens", None),
                      "output_tokens": getattr(resp.usage, "output_tokens", None)}
-            data = json.loads(self._extract_json(payload))
-            rule = CompiledRule.model_validate(data)
-
-            # sanity-check any cron the model produced; a bad cron falls back
-            if isinstance(rule.trigger, ScheduleTrigger) and not croniter.is_valid(rule.trigger.cron):
-                raise ValueError(f"LLM produced invalid cron: {rule.trigger.cron!r}")
-            return rule
+            return self._rule_from_reply(payload, text)
         except Exception as e:
             failure = f"{type(e).__name__}: {e}"
             raise
@@ -610,10 +654,7 @@ class RuleCompiler:
             if not result_text:
                 result_text = raw
                 raise ValueError("claude CLI returned no result")
-            rule = CompiledRule.model_validate(json.loads(self._extract_json(result_text)))
-            if isinstance(rule.trigger, ScheduleTrigger) and not croniter.is_valid(rule.trigger.cron):
-                raise ValueError(f"CLI produced invalid cron: {rule.trigger.cron!r}")
-            return rule
+            return self._rule_from_reply(result_text, text)
         except Exception as e:
             failure = f"{type(e).__name__}: {e}"
             raise
@@ -634,12 +675,23 @@ class RuleCompiler:
 
     @staticmethod
     def _extract_json(s: str) -> str:
+        """The JSON out of a reply that may be fenced, or wrapped in a sentence.
+
+        An ARRAY has to survive this too. Slicing from the first "{" to the last "}"
+        turned `[{...}, {...}]` into `{...}, {...}` — which looks like JSON and parses as
+        "Extra data", so a perfectly good multi-part answer was read as the model
+        misbehaving when it was this function mangling it.
+        """
         s = s.strip()
         if s.startswith("```"):
             s = re.sub(r"^```[a-zA-Z]*\n?", "", s)
             s = re.sub(r"\n?```$", "", s).strip()
-        i, j = s.find("{"), s.rfind("}")
-        return s[i:j + 1] if i != -1 and j != -1 else s
+        starts = [i for i in (s.find("{"), s.find("[")) if i != -1]
+        if not starts:
+            return s
+        i = min(starts)
+        j = s.rfind("]") if s[i] == "[" else s.rfind("}")
+        return s[i:j + 1] if j > i else s[i:]
 
     def _system_prompt(self) -> str:
         return (
@@ -655,7 +707,7 @@ class RuleCompiler:
             '     {"kind":"signal","signal":"<signal key>","edge":"becomes_true|becomes_false|changes|on_value",'
             '"comparator":"is_true|is_false|==|!=|>|>=|<|<=","value":<bool|number|string|null>,"describe":"..."}\n'
             '     {"kind":"manual","describe":"..."},\n'
-            '  "conditions": [],\n'
+            '  "conditions": [],   // ALWAYS empty — see DYNAMIC below\n'
             '  "actions": [ one or more of\n'
             '     {"kind":"set_service","group":"<group>","service":"<service id>","state":"allowed|blocked"}\n'
             '     {"kind":"set_group","group":"<group>","state":"allowed|blocked"}\n'
@@ -666,8 +718,22 @@ class RuleCompiler:
             '     {"kind":"set_host_service","service":"<host service id>","running":<bool>} ],\n'
             '  "summary": "<one-line human echo>",\n'
             '  "confidence": <0..1>,\n'
-            '  "warnings": []\n'
+            '  "warnings": [],\n'
+            '  "dynamic": <bool>\n'
             "}\n\n"
+            "ONE OBJECT, AND WHEN TO GO DYNAMIC:\n"
+            "- Return exactly ONE object. Never an array, never one object per moment.\n"
+            "- A rule holds ONE trigger and no conditions. If the instruction names more "
+            "than one moment (\"at 8pm block …, at 9.15pm unblock …, block again at "
+            "11.45pm\"), or depends on live data (someone's progress, a school day, a "
+            "form), or needs a condition of any kind, then it is a DYNAMIC rule: set "
+            '"dynamic": true, use {"kind":"manual"} as the trigger, leave "actions" and '
+            '"conditions" empty, and write the summary as a human echo of the whole '
+            "instruction. A live evaluator re-reads the rule text at each wake-up, "
+            "decides what to do, and schedules its own next check — so nothing is lost "
+            "by leaving the steps to it, and splitting the instruction into several "
+            "rules would lose the fact that they belong together.\n"
+            "- Only a plain one-moment, one-set-of-actions instruction is NOT dynamic.\n\n"
             "RULES:\n"
             '- "block"/"disable"/"turn off" => state "blocked"; "allow"/"enable"/"turn on" => "allowed".\n'
             '- A named service ("block youtube") => set_service; "all <group> devices" / '

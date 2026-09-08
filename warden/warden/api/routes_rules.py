@@ -96,6 +96,35 @@ async def update_rule(rid: str, body: UpdateBody, request: Request) -> Rule:
     return rule
 
 
+@router.post("/rules/{rid}/recompile")
+async def recompile_rule(rid: str, request: Request) -> Rule:
+    """Compile the rule's stored text again, without changing a word of it.
+
+    PUT only recompiles when the text differs, so a rule that compiled badly — the model
+    failed and the keyword parser stood in, and the rule now does less than it says — had
+    no way back except editing the text into something else and back again. A compile can
+    also simply get better: the same sentence that failed last week may compile properly
+    after a fix to the compiler.
+    """
+    ctx = request.app.state.ctx
+    rule = ctx.db.get_rule(rid)
+    if rule is None:
+        raise HTTPException(status_code=404, detail=f"no such rule: {rid}")
+    rule.compiled, rule.compile_error = await _compile(ctx, rule.text)
+    # The wake-up the old compile asked for describes the old compile; let it be judged
+    # again rather than kept alive by a plan the new one never made.
+    rule.next_check_at = None
+    rule.next_check_reason = None
+    ctx.engine.disarm_next_check(rid)
+    ctx.db.upsert_rule(rule)
+    await ctx.engine.reload_rules()
+    warnings = list((rule.compiled.warnings if rule.compiled else []) or [])
+    await ctx.audit("user", "recompile_rule", rid,
+                    rule.compile_error or (rule.compiled.summary if rule.compiled else ""),
+                    ok=not rule.compile_error and not warnings)
+    return rule
+
+
 @router.post("/rules/{rid}/toggle")
 async def toggle_rule(rid: str, request: Request) -> Rule:
     ctx = request.app.state.ctx
