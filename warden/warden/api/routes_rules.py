@@ -82,8 +82,15 @@ async def update_rule(rid: str, body: UpdateBody, request: Request) -> Rule:
     if body.text is not None and body.text != rule.text:
         rule.text = body.text
         rule.compiled, rule.compile_error = await _compile(ctx, body.text)
+        # The text drives the cadence, so a rewrite invalidates the wake-up the old
+        # text asked for: drop it and let the rule be re-judged at once.
+        rule.next_check_at = None
+        rule.next_check_reason = None
+        ctx.engine.disarm_next_check(rid)
     if body.enabled is not None:
         rule.enabled = body.enabled
+        if not body.enabled:
+            ctx.engine.disarm_next_check(rid)
     ctx.db.upsert_rule(rule)
     await ctx.engine.reload_rules()
     return rule
@@ -96,6 +103,8 @@ async def toggle_rule(rid: str, request: Request) -> Rule:
     if rule is None:
         raise HTTPException(status_code=404, detail=f"no such rule: {rid}")
     rule.enabled = not rule.enabled
+    if not rule.enabled:
+        ctx.engine.disarm_next_check(rid)
     ctx.db.upsert_rule(rule)
     await ctx.engine.reload_rules()
     return rule
@@ -106,6 +115,7 @@ async def delete_rule(rid: str, request: Request) -> dict:
     ctx = request.app.state.ctx
     if ctx.db.get_rule(rid) is None:
         raise HTTPException(status_code=404, detail=f"no such rule: {rid}")
+    ctx.engine.disarm_next_check(rid)
     ctx.db.delete_rule(rid)
     await ctx.engine.reload_rules()
     return {"ok": True, "id": rid}
@@ -132,8 +142,21 @@ async def run_rule(rid: str, request: Request, body: Optional[RunBody] = None) -
             dec = await ctx.evaluator.evaluate_rule(rule, world, catalog)
             return {"ok": True, "dry": True, "dynamic": True,
                     "condition_met": dec.condition_met, "detail": dec.reason,
-                    "actions": [a.model_dump(mode="json") for a in dec.actions]}
-        res = await ctx.evaluator.evaluate_one(rule, "manual")
+                    "actions": [a.model_dump(mode="json") for a in dec.actions],
+                    # the wake-up it WOULD arm — the whole point of a self-scheduling
+                    # rule, so a dry run has to show it
+                    "next_check_at": (dec.next_check_at.isoformat()
+                                      if dec.next_check_at else None),
+                    "next_check_reason": dec.next_check_reason}
+        try:
+            res = await ctx.evaluator.evaluate_one(rule, "manual")
+        except Exception as e:
+            # An evaluation failure is information, not a server fault — returning a 500
+            # gave the UI an unparseable body and told the operator nothing.
+            await ctx.audit(f"rule:{rid}", "rule_eval", rule.text[:80],
+                            f"evaluation failed: {type(e).__name__}: {e}", ok=False)
+            return {"ok": False, "dynamic": True, "applied": [],
+                    "detail": f"evaluation failed: {type(e).__name__}: {e}"}
         return {"ok": "error" not in res, "dynamic": True,
                 "detail": res.get("reason") or res.get("error", ""), **res}
 

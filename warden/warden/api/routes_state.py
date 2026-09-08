@@ -14,9 +14,22 @@ router = APIRouter()
 
 
 @router.get("/state")
-async def get_state(request: Request) -> StateSnapshot:
-    """Full dashboard snapshot: AdGuard status + every managed group's toggles."""
-    return await request.app.state.ctx.adguard.snapshot()
+async def get_state(request: Request) -> dict:
+    """Full dashboard snapshot: AdGuard status + every managed group's toggles.
+
+    `holds` rides alongside (not inside) the snapshot: manual flips the dynamic
+    evaluator must not undo, keyed "group/service", so the UI can badge them.
+    """
+    ctx = request.app.state.ctx
+    snap = await ctx.adguard.snapshot()
+    return {**snap.model_dump(mode="json"), "holds": _holds(ctx)}
+
+
+def _holds(ctx) -> dict:
+    from ..models import utcnow
+    return {f"{g}/{svc}": {"state": row["state"], "since": row.get("created_at", ""),
+                           "expires_at": row.get("expires_at", "")}
+            for (g, svc), row in ctx.db.active_pins(utcnow().isoformat()).items()}
 
 
 @router.get("/status")
@@ -39,6 +52,8 @@ async def get_config(request: Request) -> dict:
         "compiler": {
             "backend": ctx.compiler.backend_name(),      # anthropic-api | claude-cli | builtin-parser
             "model": ctx.settings.llm_model,
+            # the dynamic evaluator may run on a stronger model than the compiler
+            "eval_model": ctx.settings.eval_model or ctx.settings.llm_model,
         },
         "auth": {"enabled": bool(ctx.auth and ctx.auth.enabled)},
         "groups": [
@@ -63,6 +78,8 @@ async def get_config(request: Request) -> dict:
             for s in cfg.sources
         ],
         "signals": [s.model_dump(mode="json") for s in cfg.signals],
+        # one-tap Dashboard presets; the UI builds its buttons from this
+        "quick_actions": [q.model_dump(mode="json") for q in cfg.quick_actions],
     }
 
 

@@ -27,7 +27,10 @@ async def ws(websocket: WebSocket) -> None:
         # ── prime the client with current state + signals ────────────────────
         try:
             snap = await ctx.adguard.snapshot()
-            await websocket.send_json({"type": "state", "snapshot": snap.model_dump(mode="json")})
+            from .routes_state import _holds
+            await websocket.send_json({"type": "state",
+                                       "snapshot": snap.model_dump(mode="json"),
+                                       "holds": _holds(ctx)})
         except Exception as e:  # a broken snapshot must not abort the connection
             await websocket.send_json({"type": "error", "detail": f"snapshot failed: {e}"})
         await websocket.send_json({

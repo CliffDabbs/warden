@@ -44,6 +44,12 @@ class Baseline(BaseModel):
 class GroupConfig(BaseModel):
     name: str
     tag: Optional[str] = None
+    # AdGuard client tags that pull a device into this group automatically. ALL of
+    # them must be present — [user_child, device_tablet] is "a child's tablet", not
+    # "any tablet". A device type on its own therefore never implies membership.
+    # Tagging a device in AdGuard is all it takes to put it under control; explicit
+    # `clients:` entries always win (a named device keeps its own group).
+    match_tags: list[str] = Field(default_factory=list)
     baseline: Baseline = Field(default_factory=Baseline)
     default_blocked: list[str] = Field(default_factory=list)
 
@@ -53,6 +59,8 @@ class ClientConfig(BaseModel):
     group: str
     ids: list[str] = Field(default_factory=list)   # IPs or MACs (AdGuard client ids)
     subject: Optional[str] = None
+    # True when membership came from an AdGuard tag rather than a `clients:` entry.
+    discovered: bool = False
 
 
 class ServiceConfig(BaseModel):
@@ -97,6 +105,66 @@ class AdGuardConfig(BaseModel):
     url: str = "http://10.7.11.29"
 
 
+class QuickActionStep(BaseModel):
+    """One flip inside a quick action.
+
+    One of:
+      * `service` (optionally narrowed to `groups`; default = every group that has it)
+      * `group`   (that group's whole managed service list)
+      * `host_service` + `running` (start/stop a real service — GLOBAL, everyone)
+    """
+    service: Optional[str] = None
+    group: Optional[str] = None
+    groups: list[str] = Field(default_factory=list)
+    state: ServiceState = ServiceState.allowed
+    host_service: Optional[str] = None
+    running: Optional[bool] = None
+
+
+class QuickActionConfig(BaseModel):
+    """A one-tap preset shown on the Dashboard ("all streaming on, everywhere")."""
+    id: str
+    label: str
+    description: str = ""
+    icon: str = "zap"
+    style: str = "default"                   # default | good | warn | danger
+    steps: list[QuickActionStep] = Field(default_factory=list)
+    # If set, Warden snapshots the affected switches first and restores them after
+    # this many minutes — so a "movie night" unblock can't be left open overnight.
+    revert_after_minutes: Optional[int] = None
+    confirm: bool = False                    # ask before firing (for clamps/resets)
+
+
+class HostConfig(BaseModel):
+    """A machine Warden can run commands on over SSH (e.g. the NAS)."""
+    name: str
+    address: str
+    port: int = 22
+    user_env: str = ""              # env var holding the SSH username
+    password_env: str = ""          # env var holding the SSH password
+    known_hosts: bool = False       # False = don't verify (typical for a LAN NAS)
+
+
+class ManagedServiceConfig(BaseModel):
+    """A service on a host that Warden can start and stop.
+
+    This is the escape hatch for things DNS filtering cannot touch — a media server on
+    your own LAN is reachable by IP whatever the resolver says. Stopping the process is
+    absolute, and correspondingly blunt: it affects EVERYONE, not one group, so it is
+    deliberately modelled separately from the per-group service toggles.
+    """
+    id: str
+    name: str
+    host: str                       # HostConfig.name
+    description: str = ""
+    icon: str = "server"
+    start: str                      # shell command to start it
+    stop: str                       # shell command to stop it
+    status: str = ""                # optional; prints something matched below
+    status_running_match: str = "running"   # case-insensitive substring = "it's up"
+    confirm: bool = True            # ask before stopping (it hits everyone)
+
+
 class WardenConfig(BaseModel):
     adguard: AdGuardConfig = Field(default_factory=AdGuardConfig)
     groups: list[GroupConfig] = Field(default_factory=list)
@@ -106,6 +174,9 @@ class WardenConfig(BaseModel):
     sources: list[SourceConfig] = Field(default_factory=list)
     signals: list[SignalDef] = Field(default_factory=list)
     rules: list[str] = Field(default_factory=list)   # seed rules (plain English)
+    quick_actions: list[QuickActionConfig] = Field(default_factory=list)
+    hosts: list[HostConfig] = Field(default_factory=list)
+    managed_services: list[ManagedServiceConfig] = Field(default_factory=list)
 
     # convenience lookups -----------------------------------------------------
     def group(self, name: str) -> Optional[GroupConfig]:
@@ -119,6 +190,15 @@ class WardenConfig(BaseModel):
 
     def source(self, key: str) -> Optional[SourceConfig]:
         return next((s for s in self.sources if s.key == key), None)
+
+    def quick_action(self, aid: str) -> Optional[QuickActionConfig]:
+        return next((q for q in self.quick_actions if q.id == aid), None)
+
+    def host(self, name: str) -> Optional[HostConfig]:
+        return next((h for h in self.hosts if h.name == name), None)
+
+    def managed_service(self, sid: str) -> Optional[ManagedServiceConfig]:
+        return next((m for m in self.managed_services if m.id == sid), None)
 
     def clients_in_group(self, group: str) -> list[ClientConfig]:
         return [c for c in self.clients if c.group == group]
@@ -170,6 +250,41 @@ class ServiceToggle(BaseModel):
     name: str
     icon: str
     state: ServiceState
+    # A group toggle summarises several devices, and the summary can lie: blocked
+    # means ALL devices block, so one exempted device (a 4h Shield unblock) makes the
+    # whole card read "allowed" while the living-room TV is still blocked. `mixed`
+    # marks that split and `blocked_on` names the devices still blocking, so the UI
+    # can show the truth instead of the average.
+    mixed: bool = False
+    blocked_on: list[str] = Field(default_factory=list)
+
+
+class DeviceOverride(BaseModel):
+    """A standing exemption for one device from Warden's group-level writes.
+
+    `expires_at` None means "until cancelled" — the UI's Forever option. Anything
+    else is an ISO timestamp the keeper sweeps for, restoring the device's group
+    state the moment it passes.
+    """
+    client: str
+    kind: str = "unblock"
+    created_at: Optional[str] = None
+    expires_at: Optional[str] = None      # None = forever (until cancelled)
+    actor: str = "user"
+
+
+class DeviceInfo(BaseModel):
+    """A device as AdGuard knows it, annotated with what Warden makes of it."""
+    name: str
+    ids: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    group: Optional[str] = None            # None = Warden doesn't manage it
+    discovered: bool = False               # joined its group by tag, not by config
+    blocked_services: list[str] = Field(default_factory=list)
+    managed_blocked: list[str] = Field(default_factory=list)   # of Warden's services
+    managed_total: int = 0
+    use_global_blocked_services: bool = False
+    override: Optional[DeviceOverride] = None
 
 
 class ClientState(BaseModel):
@@ -180,6 +295,7 @@ class ClientState(BaseModel):
     blocked_services: list[str] = Field(default_factory=list)
     online: Optional[bool] = None
     exists_in_adguard: bool = True
+    discovered: bool = False        # joined via AdGuard tag, not named in config
 
 
 class GroupState(BaseModel):
@@ -225,3 +341,7 @@ class SourceRun(BaseModel):
     item_count: int = 0
     signal_count: int = 0
     detail: str = ""
+    # Not a stored column — set only on the run object a live collection returns:
+    # did the "state of play" actually move, or was this another identical poll?
+    # SourceRegistry uses it to force a rule re-evaluation on genuinely new facts.
+    state_changed: bool = False

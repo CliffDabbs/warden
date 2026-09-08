@@ -12,3 +12,5 @@ PyYAML==6.0.3
 python-dotenv==1.2.2
 jinja2==3.1.6
 playwright==1.61.0        # scraping; only needed when a source runs for real (container)
+pymupdf==1.28.0           # newsletter PDFs: text layer + page rasterising for the LLM read
+asyncssh==2.24.0          # start/stop services on the NAS (things DNS filtering can't reach)

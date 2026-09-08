@@ -1,0 +1,17 @@
+{
+  "id": "parentpay",
+  "display_name": "ParentPay (clubs)",
+  "version": "1.0.0",
+  "auth_type": "form_login_session",
+  "capabilities": [
+    "club_bookings",
+    "payment_items",
+    "balances"
+  ],
+  "secrets_required": [],
+  "emits_signals": [
+    "parentpay.<subject>.club_booked_tomorrow",
+    "parentpay.<subject>.club_unbooked_tomorrow",
+    "parentpay.<subject>.payments_outstanding"
+  ]
+}

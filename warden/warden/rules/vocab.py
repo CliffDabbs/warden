@@ -48,12 +48,19 @@ class VocabSignal(BaseModel):
     source: str | None = None
 
 
+class VocabHostService(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+
+
 class Vocabulary(BaseModel):
     groups: list[str]
     group_aliases: dict[str, list[str]]
     services: list[VocabService]
     subjects: list[VocabSubject]
     signals: list[VocabSignal]
+    host_services: list[VocabHostService] = Field(default_factory=list)
     allow_words: list[str] = Field(default_factory=lambda: ALLOW_WORDS)
     block_words: list[str] = Field(default_factory=lambda: BLOCK_WORDS)
 
@@ -62,6 +69,13 @@ class Vocabulary(BaseModel):
         lines = ["GROUPS: " + ", ".join(self.groups)]
         lines.append("SERVICES: " + ", ".join(f"{s.id} (groups: {','.join(s.groups)})" for s in self.services))
         lines.append("SUBJECTS: " + ", ".join(f"{s.id}={s.name}" for s in self.subjects))
+        if self.host_services:
+            lines.append("HOST SERVICES (real processes; stopping one affects EVERYONE "
+                         "in the house, not a group — only use when the rule clearly "
+                         "means the service itself):")
+            for hs in self.host_services:
+                lines.append(f"  - {hs.id} = {hs.name}"
+                             + (f" — {hs.description}" if hs.description else ""))
         if self.signals:
             lines.append("SIGNALS:")
             for sig in self.signals:
@@ -85,6 +99,10 @@ def build_vocabulary(config: WardenConfig) -> Vocabulary:
         groups=[g.name for g in config.groups],
         group_aliases=group_aliases,
         services=services,
+        host_services=[
+            VocabHostService(id=m.id, name=m.name, description=m.description)
+            for m in config.managed_services
+        ],
         subjects=[VocabSubject(id=s.id, name=s.name) for s in config.subjects],
         signals=[
             VocabSignal(key=s.key, type=s.type.value, describe=s.describe,

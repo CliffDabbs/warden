@@ -1,9 +1,12 @@
 {
   "id": "weduc",
   "display_name": "Weduc / ReachMoreParents",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "auth_type": "form_login_session",
-  "capabilities": ["messages", "calendar", "forms", "meals", "newsletter", "posts"],
+  "capabilities": ["forms", "posts", "messages", "profile", "calendar", "school_dates"],
   "secrets_required": ["username", "password"],
-  "emits_signals": ["weduc.<subject>.forms_outstanding"]
+  "emits_signals": [
+    "weduc.<subject>.forms_outstanding",
+    "weduc.<subject>.school_day_today"
+  ]
 }

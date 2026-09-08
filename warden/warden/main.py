@@ -68,11 +68,22 @@ def build_app() -> FastAPI:
     from .rules.engine import RuleEngine
     from .rules.evaluator import RuleEvaluator
     from .adapters.registry import SourceRegistry
+    from .documents import DocumentReader
+    from .hosts import HostControl
+    from .overrides import OverrideKeeper
+    from .reminders import ReminderBuilder
 
     ctx.adguard = build_adguard(settings, config)
+    # devices under a live override are exempt from group writes; the service asks
+    # the DB on every write so an override taken seconds ago is already in force.
+    ctx.adguard.active_overrides = lambda: db.active_override_names(utcnow().isoformat())
+    ctx.overrides = OverrideKeeper(ctx)
+    ctx.hosts = HostControl(ctx)
     ctx.compiler = RuleCompiler(settings, build_vocabulary(config))
     ctx.evaluator = RuleEvaluator(ctx)
     ctx.engine = RuleEngine(ctx)
+    ctx.reader = DocumentReader(ctx)
+    ctx.reminders = ReminderBuilder(ctx)
     ctx.registry = SourceRegistry(ctx)
     ctx.auth = Auth(settings)
 
@@ -82,8 +93,10 @@ def build_app() -> FastAPI:
         await _seed_rules(ctx)
         await ctx.engine.start()
         await ctx.registry.start()
+        await ctx.overrides.start()
         log.info("Warden ready — AdGuard mode=%s", ctx.adguard.mode)
         yield
+        await ctx.overrides.stop()
         await ctx.registry.stop()
         await ctx.engine.stop()
         await ctx.adguard.close()
@@ -95,11 +108,16 @@ def build_app() -> FastAPI:
     app.middleware("http")(make_auth_middleware(ctx.auth))
 
     # routers
-    from .api import routes_state, routes_rules, routes_sources, routes_actions, ws
+    from .api import (
+        routes_state, routes_rules, routes_sources, routes_actions, routes_devices,
+        routes_reminders, ws,
+    )
     app.include_router(routes_state.router, prefix="/api")
     app.include_router(routes_rules.router, prefix="/api")
     app.include_router(routes_sources.router, prefix="/api")
     app.include_router(routes_actions.router, prefix="/api")
+    app.include_router(routes_devices.router, prefix="/api")
+    app.include_router(routes_reminders.router, prefix="/api")
     app.include_router(ws.router)   # /ws (no prefix)
 
     # static SPA

@@ -57,6 +57,11 @@ class SourceContext(BaseModel):
 
 class CollectResult(BaseModel):
     ok: bool = True
+    # Did this data actually come from the live source? Fixtures are for demoing with no
+    # credentials — they must never be mistaken for real data by the rules engine, which
+    # flips real network switches. An adapter asked for a LIVE run that fails must report
+    # ok=False rather than quietly substituting the sample.
+    live: bool = False
     items: list[Item] = Field(default_factory=list)
     signals: list[Signal] = Field(default_factory=list)
     # A structured, LLM-friendly "state of play" snapshot for the dynamic rule

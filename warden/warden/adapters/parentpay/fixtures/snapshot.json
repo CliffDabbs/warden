@@ -1,0 +1,129 @@
+{
+  "_comment": "Offline sample so Warden demos with no ParentPay session. Days are stored as OFFSETS from today so the sample never goes stale. Not real bookings.",
+  "captured_at": "2026-09-03T12:00:00+00:00",
+  "clubs": [
+    {
+      "id": "157545",
+      "name": "Breakfast Club",
+      "kind": "before_school",
+      "cutoff": "Booking cut off expires at 09:00 the day before the session.",
+      "cutoff_settings": {
+        "type": "DayBeforeTimeBefore",
+        "daysBeforeSession": 1,
+        "timeCutOff": "09:00"
+      },
+      "balance": 0.0,
+      "days": [
+        {
+          "offset": 0,
+          "state": "booked",
+          "choice": "Breakfast Club",
+          "price": 3.0,
+          "capacity": 16
+        },
+        {
+          "offset": 1,
+          "state": "booked",
+          "choice": "Breakfast Club",
+          "price": 3.0,
+          "capacity": 16
+        },
+        {
+          "offset": 2,
+          "state": "available",
+          "places_left": 14,
+          "capacity": 16
+        },
+        {
+          "offset": 5,
+          "state": "available",
+          "places_left": 11,
+          "capacity": 16
+        },
+        {
+          "offset": 6,
+          "state": "unavailable",
+          "reason": "BookingClosed",
+          "capacity": 16
+        }
+      ]
+    },
+    {
+      "id": "172983",
+      "name": "Federation After School Club",
+      "kind": "after_school",
+      "_comment": "Deliberately a DIFFERENT cut-off scheme from breakfast club, because the real ones differ: this closes at 09:00 ON the day, breakfast closes 09:00 the day BEFORE.",
+      "cutoff": "Booking cut off expires at 09:00 on the day of the session.",
+      "cutoff_settings": {
+        "type": "TheDayOfBefore",
+        "daysBeforeSession": null,
+        "timeCutOff": "09:00"
+      },
+      "balance": 0.0,
+      "days": [
+        {
+          "offset": 0,
+          "state": "booked",
+          "choice": "Federation After School Club",
+          "price": 8.5,
+          "capacity": 20
+        },
+        {
+          "offset": 1,
+          "state": "available",
+          "places_left": 6,
+          "capacity": 20
+        },
+        {
+          "offset": 2,
+          "state": "available",
+          "places_left": 9,
+          "capacity": 20
+        },
+        {
+          "offset": 5,
+          "state": "booked",
+          "choice": "Federation After School Club",
+          "price": 8.5,
+          "capacity": 20
+        }
+      ]
+    }
+  ],
+  "_comment_payments": "Payment items exercise all three shapes the real page has: an outstanding charge, a settled one, and a running balance that must never be mistaken for a task.",
+  "payment_items": [
+    {
+      "name": "Luke - Swordfish Class Swimming and PE 2026",
+      "item_id": "5186709",
+      "consumer_id": "22505613",
+      "is_new": true,
+      "kind": "charge",
+      "due_offset": 10,
+      "amount": 36.0,
+      "status": "due",
+      "outstanding": true
+    },
+    {
+      "name": "Luke - Residential Trip October 2026",
+      "item_id": "4859054",
+      "consumer_id": "22505613",
+      "is_new": false,
+      "kind": "charge",
+      "due_offset": -220,
+      "amount": null,
+      "status": "paid",
+      "outstanding": false
+    },
+    {
+      "name": "Luke - School meals for Seabrook CE Primary School",
+      "item_id": "4404384",
+      "consumer_id": "22505613",
+      "is_new": false,
+      "kind": "account",
+      "due_offset": null,
+      "amount": 48.25,
+      "status": "account",
+      "outstanding": false
+    }
+  ]
+}

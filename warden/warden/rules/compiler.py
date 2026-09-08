@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import shutil
 from typing import Optional
@@ -38,6 +39,8 @@ from .schema import (
     Trigger,
 )
 from .vocab import Vocabulary, VocabService
+
+log = logging.getLogger("warden.compiler")
 
 # day-of-week names → cron numeric (cron: 0=Sun … 6=Sat)
 _DOW_NUM: list[tuple[str, int]] = [
@@ -64,6 +67,12 @@ def _word(pat: str) -> str:
 
 
 CLI_TIMEOUT = 45          # seconds to wait for a `claude -p` compile
+# Output budget for a JSON completion. Generous because a reasoning model (the evaluator
+# runs on WARDEN_EVAL_MODEL, typically a thinking one) spends this on thinking before it
+# writes a single character of the answer — at the old 1500 the whole budget could go to
+# thinking and return no answer at all. Only tokens actually produced are billed, so the
+# headroom is free for the non-thinking models.
+DEFAULT_MAX_TOKENS = 8000
 
 
 class RuleCompiler:
@@ -107,24 +116,58 @@ class RuleCompiler:
             return True
         return any(re.search(_word(w), t) for w in _DATA_WORDS)
 
-    async def complete_json(self, system: str, user: str) -> dict:
-        """Generic LLM call returning parsed JSON, via the active backend. Used by the
-        dynamic rule evaluator. Raises RuntimeError if no LLM backend is configured."""
+    async def complete_json(self, system: str, user: str,
+                            model: Optional[str] = None,
+                            max_tokens: int = DEFAULT_MAX_TOKENS) -> dict:
+        """Generic LLM call returning parsed JSON, retried once if the JSON is malformed.
+
+        Models occasionally emit not-quite-valid JSON (an unescaped quote, a stray
+        delimiter). One observed case blew up a rule evaluation mid-run, so a single
+        clean retry happens here rather than letting a formatting slip surface as a
+        server error.
+
+        `model` overrides the configured one — the evaluator uses it so its harder
+        reasoning can run on a stronger model than the compiler needs.
+        """
+        try:
+            return await self._complete_json_once(system, user, model, max_tokens)
+        except json.JSONDecodeError as e:
+            log.warning("LLM returned malformed JSON (%s); retrying once", e)
+            return await self._complete_json_once(
+                system + "\n\nIMPORTANT: your previous reply was not valid JSON. Reply "
+                         "with a single valid JSON object and nothing else. Keep string "
+                         "values short and escape any quotes inside them.",
+                user, model, max_tokens)
+
+    async def _complete_json_once(self, system: str, user: str,
+                                  model: Optional[str] = None,
+                                  max_tokens: int = DEFAULT_MAX_TOKENS) -> dict:
         backend = self._backend()
         if backend == "none":
             raise RuntimeError("no LLM backend (set ANTHROPIC_API_KEY or install the claude CLI)")
+        use_model = model or self.settings.llm_model
         if backend == "api":
             from anthropic import AsyncAnthropic
             if self._client is None:
                 self._client = AsyncAnthropic(api_key=self.settings.anthropic_api_key)
             resp = await self._client.messages.create(
-                model=self.settings.llm_model, max_tokens=1500,
+                model=use_model, max_tokens=max_tokens,
                 system=system, messages=[{"role": "user", "content": user}])
             text = "".join(b.text for b in resp.content if getattr(b, "type", None) == "text")
+            # A reasoning model spends the budget on thinking FIRST, so too small a cap
+            # returns a reply that is all thinking and no answer — zero text blocks and
+            # stop_reason "max_tokens". That surfaced as an unreadable
+            # "Expecting value: line 1 column 1" and lost a seed-3 evaluation on
+            # 2026-08-27. Name it instead, so the cause is in the audit line.
+            if not text.strip():
+                raise ValueError(
+                    f"{use_model} returned no text (stop_reason={resp.stop_reason}; "
+                    f"{resp.usage.output_tokens} output tokens). If this is a thinking "
+                    f"model, max_tokens={max_tokens} left no room for the answer.")
         else:  # cli
             prompt = system + "\n\n" + user
             args = [self.settings.claude_cli, "-p", "--output-format", "json"]
-            m = self._cli_model()
+            m = self._cli_model(use_model)
             if m:
                 args += ["--model", m]
             proc = await asyncio.create_subprocess_exec(
@@ -500,9 +543,9 @@ class RuleCompiler:
             raise ValueError(f"CLI produced invalid cron: {rule.trigger.cron!r}")
         return rule
 
-    def _cli_model(self) -> Optional[str]:
-        """Map the configured model id to a CLI alias (cheap by default)."""
-        m = (self.settings.llm_model or "").lower()
+    def _cli_model(self, model: Optional[str] = None) -> Optional[str]:
+        """Map a model id to a CLI alias (cheap by default)."""
+        m = (model or self.settings.llm_model or "").lower()
         if "haiku" in m:
             return "haiku"
         if "sonnet" in m:
@@ -541,7 +584,8 @@ class RuleCompiler:
             '     {"kind":"set_client","client":"<name>","state":"allowed|blocked"}\n'
             '     {"kind":"set_protection","enabled":<bool>}\n'
             '     {"kind":"add_rule","rule":"<adguard filter>"}\n'
-            '     {"kind":"remove_rule","rule":"<adguard filter>"} ],\n'
+            '     {"kind":"remove_rule","rule":"<adguard filter>"}\n'
+            '     {"kind":"set_host_service","service":"<host service id>","running":<bool>} ],\n'
             '  "summary": "<one-line human echo>",\n'
             '  "confidence": <0..1>,\n'
             '  "warnings": []\n'
@@ -556,6 +600,10 @@ class RuleCompiler:
             '- "when <subject> has completed/finished their atom learning" => a signal trigger '
             "on the atom.<subject>.daily_complete signal, edge becomes_true, comparator is_true.\n"
             "- Only reference groups/services/signals that exist in the VOCABULARY.\n"
+            '- set_host_service stops or starts a REAL service for the whole house (it is '
+            "not per-group). Use it only when the instruction plainly means the service "
+            'itself — "stop the Plex server", or an "everything off" that names it. A '
+            "rule about what the kids can watch is a set_service, not this.\n"
             "Return JSON only."
         )
 

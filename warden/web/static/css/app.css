@@ -226,6 +226,96 @@ code { font-family: var(--mono); font-size: 0.86em; }
 .btn-danger:hover { background: var(--danger-soft); }
 .btn-sm { padding: 5px 10px; font-size: 12px; }
 .btn-icon { padding: 6px 9px; }
+.btn-good { background: transparent; border-color: rgba(62,207,142,0.35); color: var(--ok); }
+.btn-good:hover { background: var(--ok-soft); }
+.btn-warn { background: transparent; border-color: rgba(245,180,69,0.35); color: var(--warn); }
+.btn-warn:hover { background: var(--warn-soft); }
+
+/* ── quick actions (configurable one-tap presets on the dashboard) ────────── */
+.quick-bar {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
+}
+.quick-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-faint); margin-bottom: 10px;
+}
+.quick-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn-quick { position: relative; }
+.quick-timer {
+  font-size: 10px; font-weight: 700; opacity: 0.75;
+  border: 1px solid currentColor; border-radius: var(--radius-pill);
+  padding: 0 5px; margin-left: 2px;
+}
+
+/* ── inline rule-text editor ──────────────────────────────────────────────── */
+.rule-editor { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+.rule-edit-ta {
+  width: 100%; resize: vertical; min-height: 92px; line-height: 1.5;
+  font-family: inherit; font-size: 13px;
+}
+.rule-edit-hint { font-size: 11.5px; color: var(--text-faint); line-height: 1.45; }
+
+/* ── weekly workload target (per source) ─────────────────────────────────── */
+.target-row {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 10px 0 4px; padding: 10px 12px;
+  background: var(--surface-2); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+.target-label { font-size: 12.5px; font-weight: 600; color: var(--text-muted); }
+.target-input { width: 84px; padding: 6px 8px; font-size: 13px; }
+.target-meta { font-size: 11.5px; color: var(--text-faint); margin-right: auto; }
+/* today's share of that weekly number — what the daily gate is actually judged on */
+.target-due {
+  font-size: 11.5px; font-weight: 600; color: var(--text-muted);
+  padding: 3px 9px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border-soft);
+}
+.target-due.is-met { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+
+/* ── "this source is serving sample data" warning ─────────────────────────── */
+.source-warn {
+  display: flex; align-items: flex-start; gap: 9px;
+  margin: 10px 0 4px; padding: 10px 12px; font-size: 12.5px; line-height: 1.45;
+  background: var(--danger-soft); border: 1px solid rgba(255, 107, 107, 0.4);
+  border-radius: var(--radius-sm); color: var(--text);
+}
+.source-warn .ico { color: var(--danger); flex: 0 0 auto; margin-top: 1px; }
+
+/* ── whole-house managed services (start/stop the real thing) ─────────────── */
+.hostsvc-bar {
+  background: var(--surface); border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius); padding: 14px 16px; margin-bottom: 16px;
+}
+.hostsvc-title {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--warn);
+}
+.hostsvc-sub { font-size: 11.5px; color: var(--text-faint); margin: 4px 0 11px; line-height: 1.45; }
+.hostsvc-row { display: flex; flex-wrap: wrap; gap: 10px; }
+.hostsvc {
+  display: flex; align-items: center; gap: 11px; flex: 1 1 320px;
+  background: var(--surface-2); border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm); padding: 11px 13px;
+}
+.hostsvc-ico { color: var(--text-muted); display: flex; }
+.hostsvc-meta { min-width: 0; margin-right: auto; }
+.hostsvc-name { font-size: 13.5px; font-weight: 600; }
+.hostsvc-detail {
+  /* wraps rather than truncating — this line carries the "set X in .env" instruction,
+     which is useless cut off mid-word */
+  font-size: 11.5px; color: var(--text-faint); margin-top: 2px;
+  line-height: 1.4; max-width: 46ch;
+}
+.hostsvc-state {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  padding: 3px 7px; border-radius: var(--radius-pill); border: 1px solid transparent;
+}
+.hostsvc-state.is-up { background: var(--ok-soft); color: var(--ok); }
+.hostsvc-state.is-down { background: var(--danger-soft); color: var(--danger); }
+.hostsvc-state.is-unknown { background: var(--surface-hi); color: var(--text-faint); }
 
 /* ── accessible switch (toggle) ─────────────────────────────────────────────*/
 .switch { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
@@ -366,6 +456,30 @@ textarea::placeholder, input::placeholder { color: var(--text-faint); }
 .sim input[type="number"], .sim input[type="text"] { width: 92px; padding: 6px 9px; }
 .val-num { font-family: var(--mono); font-weight: 650; color: var(--accent-hi); }
 
+/* ── devices (per-device overrides) ────────────────────────────────────────*/
+.section-head-sub { margin-top: 22px; }
+.section-head-sub h3 { font-size: 14px; margin: 0; font-weight: 650; color: var(--text-muted); }
+.device-list { display: flex; flex-direction: column; gap: 2px; }
+.device-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 14px; align-items: center;
+  padding: 11px 12px; border-radius: var(--radius-sm); border: 1px solid transparent;
+}
+.device-row:hover { background: var(--surface); border-color: var(--border-soft); }
+.device-row.is-override { background: var(--warn-soft); }
+.device-main { min-width: 0; }
+.device-name {
+  font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 8px;
+}
+.device-meta {
+  font-family: var(--mono); font-size: 11.5px; color: var(--text-faint);
+  margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.device-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+@media (max-width: 640px) {
+  .device-row { grid-template-columns: 1fr auto; }
+  .device-actions { grid-column: 1 / -1; justify-content: flex-start; }
+}
+
 /* ── activity ──────────────────────────────────────────────────────────────*/
 .audit-list { display: flex; flex-direction: column; gap: 2px; }
 .audit-row {
@@ -391,6 +505,37 @@ textarea::placeholder, input::placeholder { color: var(--text-faint); }
 .about-grid dd { margin: 0; font-size: 13.5px; }
 
 /* ── toasts ────────────────────────────────────────────────────────────────*/
+/* ── protection gate (AdGuard protection off = nothing is enforced) ─────────*/
+.pgate {
+  position: fixed; inset: 0; z-index: 50;          /* over the app, under toasts */
+  display: grid; place-items: center; padding: 24px;
+  background: rgba(8, 10, 18, 0.86); backdrop-filter: blur(4px);
+}
+.pgate[hidden] { display: none; }                  /* display:grid would beat [hidden] */
+.pgate-card {
+  width: min(660px, 100%); text-align: center; padding: 34px 30px;
+  background: #2a1116; border: 3px solid var(--danger); border-radius: var(--radius);
+  box-shadow: 0 0 0 1px rgba(255,107,107,0.25), 0 24px 70px rgba(0,0,0,0.6);
+  animation: pgate-pulse 2.2s ease-in-out infinite;
+}
+.pgate-badge { font-size: 46px; line-height: 1; margin-bottom: 10px; }
+.pgate-title {
+  margin: 0 0 12px; font-size: clamp(26px, 5vw, 40px); font-weight: 800;
+  letter-spacing: 0.5px; color: var(--danger); text-transform: uppercase;
+}
+.pgate-body { margin: 0 auto 22px; max-width: 46ch; font-size: 15px; line-height: 1.55; color: #ffd9d9; }
+.pgate-btn {
+  font-size: 15px; font-weight: 650; padding: 13px 26px;
+  background: var(--danger); border-color: transparent; color: #2a0d10;
+}
+.pgate-btn:hover { background: #ff8585; }
+.pgate-foot { margin: 16px 0 0; font-size: 12.5px; color: rgba(255,217,217,0.65); }
+@keyframes pgate-pulse {
+  0%, 100% { border-color: var(--danger); }
+  50%      { border-color: rgba(255,107,107,0.45); }
+}
+@media (prefers-reduced-motion: reduce) { .pgate-card { animation: none; } }
+
 .toasts {
   position: fixed; right: 18px; bottom: 18px; z-index: 60;
   display: flex; flex-direction: column; gap: 10px; max-width: 360px;
@@ -411,9 +556,123 @@ textarea::placeholder, input::placeholder { color: var(--text-faint); }
 .spin { display: inline-block; width: 13px; height: 13px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; vertical-align: -2px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── reminders (the daily school page) ─────────────────────────────────────*/
+/* Today and tomorrow are the whole point of the page, so they get real estate
+   before anything else and are readable from across the kitchen. */
+.rem-strip { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); margin-bottom: 16px; }
+.rem-tile {
+  padding: 16px 18px; border-radius: var(--radius);
+  background: var(--surface); border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--text-faint);
+}
+.rem-tile.is-school  { border-left-color: var(--ok); }
+.rem-tile.is-off     { border-left-color: var(--warn); }
+.rem-tile.is-unknown { border-left-color: var(--text-faint); }
+.rem-tile-when {
+  font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.rem-tile-date  { font-size: 13px; color: var(--text-muted); margin-top: 2px; }
+.rem-tile-state { font-size: 22px; font-weight: 700; margin-top: 6px; letter-spacing: 0.2px; }
+.rem-tile.is-school .rem-tile-state { color: var(--ok); }
+.rem-tile.is-off    .rem-tile-state { color: var(--warn); }
+.rem-tile-why { font-size: 12.5px; color: var(--text-faint); margin-top: 2px; }
+/* The day's actual arrangements, inside the tile you glance at. */
+.rem-tile-facts {
+  margin-top: 12px; padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.rem-tile-fact {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13.5px; font-weight: 550; color: var(--text);
+}
+.rem-tile-ico { font-size: 15px; line-height: 1; flex: 0 0 auto; }
+.rem-tile-fact .badge { margin-left: auto; }
+.rem-strip-note { grid-column: 1 / -1; display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Money owed reads like the forms card — same shape, same urgency language, because
+   it is the same kind of thing: something outstanding with a deadline on it. */
+.rem-pay { margin-bottom: 16px; border-left: 3px solid var(--warn); }
+.rem-pay.has-overdue { border-left-color: var(--danger); }
+.rem-pay .rem-form-title { display: flex; align-items: center; gap: 8px; }
+
+.rem-forms { margin-bottom: 16px; border-left: 3px solid var(--warn); }
+.rem-forms.has-overdue { border-left-color: var(--danger); }
+.rem-form { padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
+.rem-form:last-child { border-bottom: 0; }
+.rem-form-title { font-size: 13.5px; font-weight: 600; line-height: 1.4; }
+.rem-form-meta { display: flex; align-items: center; gap: 10px; margin-top: 6px; flex-wrap: wrap; }
+
+/* Things still fixable. Red because there is a deadline on them — everything else on
+   the page is information, this is the bit you might have to act on today. */
+.rem-alerts { margin-bottom: 16px; border-left: 3px solid var(--warn); }
+.rem-alerts.is-urgent { border-left-color: var(--danger); }
+.rem-alert { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
+.rem-alert:last-child { border-bottom: 0; }
+
+/* Inside a day card an alert row is tinted rather than shouty — it has already been
+   surfaced at the top, and a wall of red would flatten the distinction. */
+.rem-row.is-alert { background: var(--danger-soft); border-radius: var(--radius-sm); padding: 10px 10px; }
+.rem-row.is-alert .rem-title { color: var(--danger); }
+
+.rem-days { display: flex; flex-direction: column; gap: 10px; }
+.rem-day {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--bg-elev) 100%);
+  border: 1px solid var(--border-soft); border-radius: var(--radius); overflow: hidden;
+}
+.rem-day.is-today { border-color: rgba(109, 140, 255, 0.35); box-shadow: var(--shadow-soft); }
+.rem-day-head {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 11px 16px; border-bottom: 1px solid var(--border-soft);
+}
+.rem-day.is-off .rem-day-head { background: rgba(245, 180, 69, 0.05); }
+.rem-day-label { font-weight: 700; font-size: 14px; }
+.rem-day-date  { font-size: 12.5px; color: var(--text-faint); }
+.rem-day-state {
+  margin-left: auto; font-size: 11.5px; font-weight: 600;
+  letter-spacing: 0.04em; color: var(--text-faint);
+}
+.rem-day-state.on  { color: var(--ok); }
+.rem-day-state.off { color: var(--warn); }
+.rem-day-body { padding: 4px 16px 10px; }
+
+.rem-row { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
+.rem-row:last-child { border-bottom: 0; }
+.rem-ico { font-size: 18px; line-height: 1.3; flex: 0 0 auto; width: 22px; text-align: center; }
+.rem-main { min-width: 0; flex: 1; }
+.rem-title {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  font-size: 14px; font-weight: 600; line-height: 1.35;
+}
+.rem-at { padding: 2px 8px; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.rem-detail { font-size: 13px; color: var(--text-muted); margin-top: 3px; line-height: 1.45; }
+/* Provenance is deliberately quiet — present for checking, not competing with the ask. */
+.rem-from { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; cursor: help; }
+
+.card.is-stale { opacity: 0.8; }
+.rem-nl-summary { font-size: 13px; color: var(--text-muted); line-height: 1.5; margin: 10px 0; }
+.rem-nl-hit {
+  padding: 9px 12px; margin: 8px 0; border-radius: var(--radius-sm);
+  background: var(--surface-2); border-left: 2px solid var(--border);
+}
+.rem-nl-hit.is-child { border-left-color: var(--ok); background: var(--ok-soft); }
+.rem-nl-quote { font-size: 13px; font-style: italic; }
+.rem-nl-why { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.45; }
+
+.rem-more { margin: 10px auto 0; display: block; }
+
+.rem-foot {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-soft);
+}
+.rem-foot-text { font-size: 11.5px; color: var(--text-faint); flex: 1; min-width: 200px; }
+.rem-links { display: flex; gap: 8px; flex-wrap: wrap; }
+
 /* ── responsive ────────────────────────────────────────────────────────────*/
 @media (max-width: 640px) {
   #app { padding: 0 12px 32px; }
+  .rem-strip { grid-template-columns: 1fr; }
   .topbar { padding: 14px 2px 10px; }
   .brand-tag { display: none; }
   .tabs { top: 66px; overflow-x: auto; }
@@ -424,3 +683,47 @@ textarea::placeholder, input::placeholder { color: var(--text-faint); }
   .rule { flex-wrap: wrap; }
   .rule .rule-ctl { flex-direction: row; align-items: center; width: 100%; justify-content: space-between; }
 }
+
+/* ── protection-off reason dialog + accountability ──────────────────────── */
+.pod-card { text-align: left; max-width: 480px; }
+.pod-card .pgate-badge, .pod-card .pgate-title { text-align: center; }
+.pod-label {
+  display: block; margin: 14px 0 5px; font-size: 12.5px; font-weight: 600;
+  letter-spacing: 0.3px; text-transform: uppercase; color: rgba(255,217,217,0.8);
+}
+.pod-reason, .pod-device {
+  width: 100%; box-sizing: border-box; padding: 9px 11px; font: inherit;
+  color: var(--text, #eee); background: rgba(0,0,0,0.35);
+  border: 1px solid rgba(255,107,107,0.35); border-radius: 8px; resize: vertical;
+}
+.pod-reason:focus, .pod-device:focus { outline: none; border-color: var(--danger); }
+.pod-error {
+  margin: 8px 0 0; padding: 9px 11px; font-size: 13.5px; line-height: 1.45;
+  color: #ffd9d9; background: var(--danger-soft);
+  border: 1px solid rgba(255,107,107,0.4); border-radius: 8px;
+}
+.pod-btns { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.pod-btns .btn.danger { background: var(--danger); border-color: transparent; color: #2a0d10; font-weight: 700; }
+.pgate-who {
+  margin: -8px auto 20px; max-width: 46ch; padding: 8px 12px; font-size: 13.5px;
+  color: #ffd9d9; background: rgba(0,0,0,0.3);
+  border: 1px solid rgba(255,107,107,0.35); border-radius: 8px;
+}
+
+/* a protection kill in the activity feed gets a red stripe, not a quiet row */
+.audit-row.prot-off {
+  background: var(--danger-soft);
+  border-left: 3px solid var(--danger);
+  font-weight: 600;
+}
+.toast.warn { border-color: rgba(255,183,77,0.6); }
+.pod-card { animation: none; }   /* the ask-first dialog is calm; only the lockout pulses */
+/* tall dialog on a phone with the keyboard up: keep it scrollable and centred */
+.pgate { overflow-y: auto; place-items: safe center; }
+
+/* a manually-held switch: rules keep their hands off until the scheduled reset */
+.badge-hold {
+  background: rgba(255,183,77,0.16); color: #ffb74d;
+  border-color: transparent; white-space: nowrap;
+}
+.svc-state.mixed { color: #ffb74d; cursor: help; }

@@ -55,7 +55,11 @@ class AppContext:
         self.engine: Any = None         # RuleEngine
         self.evaluator: Any = None      # RuleEvaluator (dynamic LLM rules)
         self.registry: Any = None       # SourceRegistry
+        self.reader: Any = None         # DocumentReader (newsletter PDFs)
+        self.reminders: Any = None      # ReminderBuilder (the daily school reminders page)
+        self.hosts: Any = None          # HostControl (start/stop services over SSH)
         self.auth: Any = None           # Auth (login gate; None/disabled = open)
+        self.overrides: Any = None      # OverrideKeeper (expires timed device unblocks)
 
     # ── audit + change notification ──────────────────────────────────────────
     async def audit(self, actor: str, action: str, target: str = "",
@@ -70,10 +74,15 @@ class AppContext:
             return
         try:
             snap = await self.adguard.snapshot()
+            holds = {f"{g}/{svc}": {"state": row["state"],
+                                    "since": row.get("created_at", ""),
+                                    "expires_at": row.get("expires_at", "")}
+                     for (g, svc), row in self.db.active_pins(utcnow().isoformat()).items()}
             await self.events.publish({
                 "type": "state",
                 "reason": reason,
                 "snapshot": snap.model_dump(mode="json"),
+                "holds": holds,
             })
         except Exception as e:  # never let a UI push break an action
             await self.events.publish({"type": "error", "detail": f"snapshot failed: {e}"})

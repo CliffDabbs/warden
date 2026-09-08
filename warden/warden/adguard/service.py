@@ -20,12 +20,12 @@ Canonical service-state model (INTERFACES.md):
 """
 from __future__ import annotations
 
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
 
 from ..config import Settings
 from ..models import (
-    AdGuardStatus, ClientState, GroupState, ServiceState, ServiceToggle,
-    StateSnapshot, WardenConfig,
+    AdGuardStatus, ClientConfig, ClientState, DeviceInfo, GroupState, ServiceState,
+    ServiceToggle, StateSnapshot, WardenConfig,
 )
 from .client import AdGuardClient
 from .fake import FakeAdGuard
@@ -61,6 +61,10 @@ class AdGuardService:
         self._live: Optional[AdGuardClient] = None
         self._backend: Backend = self._fake
         self._connected = False
+        # Names currently exempt from group writes. main.py points this at the DB;
+        # a callable (not a set) so the service stays free of storage concerns and
+        # every write sees the live answer rather than a stale copy.
+        self.active_overrides: Callable[[], set[str]] = lambda: set()
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     async def connect(self) -> None:
@@ -97,6 +101,100 @@ class AdGuardService:
             await self._live.close()
         self._connected = False
 
+    # ── membership ───────────────────────────────────────────────────────────
+    def _resolve_clients(self, raw_clients: list[dict[str, Any]]) -> list[ClientConfig]:
+        """Every managed device: those named in `clients:`, then tag-discovered ones.
+
+        A device named in config keeps its configured group. Otherwise it joins a group
+        whose `match_tags` it carries IN FULL — every listed tag must be present. So
+        [user_child, device_tablet] means "a tablet belonging to a child", NOT "any
+        tablet, or any child's device": a device type alone never implies a group.
+
+        Groups are tried most-specific-first (most tags wins; config order breaks ties),
+        so a narrow group never loses a device to a broader one. A device joins at most
+        one group, so it can never receive conflicting writes.
+        """
+        candidates = sorted(
+            (g for g in self.config.groups if g.match_tags),
+            key=lambda g: -len(g.match_tags),      # stable: config order breaks ties
+        )
+        out = list(self.config.clients)
+        claimed = {c.name for c in out}
+        for raw in raw_clients:
+            name = raw.get("name")
+            if not name or name in claimed:        # explicit config entry wins
+                continue
+            tags = set(raw.get("tags") or [])
+            if not tags:
+                continue
+            g = next((g for g in candidates if set(g.match_tags) <= tags), None)
+            if g is None:
+                continue
+            claimed.add(name)
+            out.append(ClientConfig(
+                name=name, group=g.name,
+                ids=list(raw.get("ids") or []), discovered=True,
+            ))
+        return out
+
+    def _members(self, group: str, resolved: list[ClientConfig]) -> list[ClientConfig]:
+        return [c for c in resolved if c.group == group]
+
+    async def resolve_clients(self) -> list[ClientConfig]:
+        """Public: membership as it stands in AdGuard right now (used for validation)."""
+        return self._resolve_clients(await self._backend.get_clients())
+
+    async def list_devices(self, overrides: Optional[dict[str, Any]] = None) -> list[DeviceInfo]:
+        """EVERY device AdGuard knows, not just the managed ones.
+
+        The override page needs the full picture — an unmanaged device is still worth
+        showing so it's obvious why nothing is being blocked on it.
+        """
+        raws = await self._backend.get_clients()
+        group_of = {c.name: c for c in self._resolve_clients(raws)}
+        out: list[DeviceInfo] = []
+        for raw in raws:
+            name = raw.get("name")
+            if not name:
+                continue
+            cc = group_of.get(name)
+            blocked = list(raw.get("blocked_services") or [])
+            managed = [s.id for s in self.config.services_for_group(cc.group)] if cc else []
+            out.append(DeviceInfo(
+                name=name,
+                ids=list(raw.get("ids") or []),
+                tags=list(raw.get("tags") or []),
+                group=cc.group if cc else None,
+                discovered=bool(cc and cc.discovered),
+                blocked_services=blocked,
+                managed_blocked=[s for s in managed if s in blocked],
+                managed_total=len(managed),
+                use_global_blocked_services=bool(raw.get("use_global_blocked_services")),
+                override=(overrides or {}).get(name),
+            ))
+        out.sort(key=lambda d: (d.group is None, d.group or "", d.name.lower()))
+        return out
+
+    async def set_device_services(self, name: str, state: ServiceState) -> None:
+        """Block/allow a device's managed services, ignoring any override.
+
+        `set_client` refuses unknown names and is the path rules take; this is the
+        override page's direct lever, used when the exemption is being created or
+        lifted and so must not be blocked by itself.
+        """
+        raws = await self._backend.get_clients()
+        cc = next((c for c in self._resolve_clients(raws) if c.name == name), None)
+        raw = next((r for r in raws if r.get("name") == name), None)
+        if raw is None:
+            raise ValueError(f"client not present in AdGuard: {name!r}")
+        if cc is None:
+            raise ValueError(f"device is not in any Warden group: {name!r}")
+        svc_ids = {s.id for s in self.config.services_for_group(cc.group)}
+        blocked = set(raw.get("blocked_services") or [])
+        new = (blocked | svc_ids) if state is ServiceState.blocked else (blocked - svc_ids)
+        if new != blocked:
+            await self._backend.set_client_services(name, sorted(new))
+
     # ── reads ────────────────────────────────────────────────────────────────
     async def status(self) -> AdGuardStatus:
         try:
@@ -111,41 +209,52 @@ class AdGuardService:
         )
 
     async def list_clients(self) -> list[ClientState]:
-        """Managed devices (named in config.clients), flagged if absent from AdGuard."""
-        by_name = {c.get("name"): c for c in await self._backend.get_clients()}
+        """Managed devices (config-named + tag-matched), flagged if absent from AdGuard."""
+        raws = await self._backend.get_clients()
+        by_name = {c.get("name"): c for c in raws}
         out: list[ClientState] = []
-        for cc in self.config.clients:
+        for cc in self._resolve_clients(raws):
             raw = by_name.get(cc.name)
             out.append(ClientState(
                 name=cc.name, ids=cc.ids, group=cc.group, subject=cc.subject,
                 blocked_services=list(raw.get("blocked_services") or []) if raw else [],
                 exists_in_adguard=raw is not None,
+                discovered=cc.discovered,
             ))
         return out
 
     async def snapshot(self) -> StateSnapshot:
         status = await self.status()
-        by_name = {c.get("name"): c for c in await self._backend.get_clients()}
+        raws = await self._backend.get_clients()
+        by_name = {c.get("name"): c for c in raws}
+        resolved = self._resolve_clients(raws)
         groups: list[GroupState] = []
         for g in self.config.groups:
             clients: list[ClientState] = []
-            for cc in self.config.clients_in_group(g.name):
+            for cc in self._members(g.name, resolved):
                 raw = by_name.get(cc.name)
                 clients.append(ClientState(
                     name=cc.name, ids=cc.ids, group=g.name, subject=cc.subject,
                     blocked_services=list(raw.get("blocked_services") or []) if raw else [],
                     exists_in_adguard=raw is not None,
+                    discovered=cc.discovered,
                 ))
             existing = [c for c in clients if c.exists_in_adguard]
             toggles: list[ServiceToggle] = []
             for s in self.config.services_for_group(g.name):
+                blocked_on: list[str] = []
                 if existing:
-                    blocked = all(s.id in c.blocked_services for c in existing)
+                    blocked_on = [c.name for c in existing if s.id in c.blocked_services]
+                    blocked = len(blocked_on) == len(existing)
                 else:                              # no provisioned device: config intent
                     blocked = s.id in g.default_blocked
                 toggles.append(ServiceToggle(
                     id=s.id, name=s.name, icon=s.icon,
+                    # state keeps its historical meaning (blocked iff ALL block) so the
+                    # evaluator's idempotence checks are unchanged; mixed carries the split
                     state=ServiceState.blocked if blocked else ServiceState.allowed,
+                    mixed=bool(blocked_on) and not blocked,
+                    blocked_on=blocked_on if not blocked else [],
                 ))
             groups.append(GroupState(
                 name=g.name, tag=g.tag, services=toggles, clients=clients,
@@ -169,7 +278,8 @@ class AdGuardService:
 
     async def set_client(self, client: str, state: ServiceState) -> None:
         """Block/allow all of a single device's managed services."""
-        cc = next((c for c in self.config.clients if c.name == client), None)
+        raws = await self._backend.get_clients()
+        cc = next((c for c in self._resolve_clients(raws) if c.name == client), None)
         if cc is None:
             raise ValueError(f"unknown client: {client!r}")
         svc_ids = {s.id for s in self.config.services_for_group(cc.group)}
@@ -186,10 +296,14 @@ class AdGuardService:
 
     async def _apply(self, group: str, svc_ids: set[str], state: ServiceState) -> None:
         """Add/remove `svc_ids` in each existing group client's blocked_services."""
-        by_name = {c.get("name"): c for c in await self._backend.get_clients()}
-        for cc in self.config.clients_in_group(group):
+        raws = await self._backend.get_clients()
+        by_name = {c.get("name"): c for c in raws}
+        exempt = self.active_overrides()
+        for cc in self._members(group, self._resolve_clients(raws)):
             raw = by_name.get(cc.name)
             if raw is None:                        # skip devices not yet in AdGuard
+                continue
+            if cc.name in exempt:                  # manual unblock outranks the group
                 continue
             blocked = set(raw.get("blocked_services") or [])
             new = (blocked | svc_ids) if state is ServiceState.blocked else (blocked - svc_ids)

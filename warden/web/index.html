@@ -45,6 +45,8 @@
   <!-- ── view tabs + live-connection indicator ───────────────────────────── -->
   <nav class="tabs" id="tabs" aria-label="Views">
     <button class="tab is-active" data-view="dashboard" type="button">Dashboard</button>
+    <button class="tab" data-view="reminders" type="button">Reminders</button>
+    <button class="tab" data-view="devices" type="button">Devices</button>
     <button class="tab" data-view="rules" type="button">Rules</button>
     <button class="tab" data-view="sources" type="button">Sources</button>
     <button class="tab" data-view="activity" type="button">Activity</button>
@@ -66,6 +68,11 @@
 </div>
 
 <!-- toast notifications mount here -->
+<!-- Blocks the whole UI while AdGuard protection is off. Deliberately OUTSIDE #app:
+     app.js marks #app inert while this is up, so nothing behind it is reachable by
+     click or keyboard, but this button still is. -->
+<div id="protectionGate" class="pgate" hidden></div>
+
 <div id="toasts" class="toasts" aria-live="assertive"></div>
 
 <noscript>

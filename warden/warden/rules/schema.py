@@ -115,10 +115,22 @@ class RemoveRuleAction(BaseModel):
     rule: str
 
 
+class SetHostServiceAction(BaseModel):
+    """Start or stop a service on a host (see config `managed_services`).
+
+    GLOBAL by nature: unlike the per-group toggles this affects everyone in the house
+    and ends anything mid-stream. Rules using it should say so in their wording.
+    """
+    kind: Literal["set_host_service"] = "set_host_service"
+    service: str                                 # ManagedServiceConfig.id
+    running: bool
+
+
 Action = Annotated[
     Union[
         SetServiceAction, SetGroupAction, SetClientAction,
         SetProtectionAction, AddRuleAction, RemoveRuleAction,
+        SetHostServiceAction,
     ],
     Field(discriminator="kind"),
 ]
@@ -151,3 +163,10 @@ class Rule(BaseModel):
     updated_at: Optional[str] = None
     last_fired_at: Optional[str] = None
     last_result: Optional[str] = None
+    # For dynamic rules the LLM decides its OWN next wake-up as part of each
+    # evaluation, from the cadence written into the rule's English ("no need to check
+    # while he's at school … then hourly until 7pm"). The engine schedules a one-shot
+    # job at this instant, and every other evaluation path treats a future value as
+    # "not due yet". ISO-8601, UTC. None = evaluate on the safety-net tick.
+    next_check_at: Optional[str] = None
+    next_check_reason: Optional[str] = None

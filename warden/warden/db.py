@@ -15,8 +15,24 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from .models import AuditEntry, Signal, SignalType, SourceRun, Item, utcnow
+from .models import (
+    AuditEntry, DeviceOverride, Signal, SignalType, SourceRun, Item, utcnow,
+)
 from .rules.schema import Rule
+
+# Fields an adapter re-stamps on every collection. They say when we looked, never what
+# we found, so they are stripped before a state snapshot is compared with the last one.
+_CLOCK_FIELDS = ("now", "collected_at", "fetched_at", "generated_at")
+
+
+def _without_clocks(value):
+    """Deep-copy `value` minus the run-stamp fields, for change detection only."""
+    if isinstance(value, dict):
+        return {k: _without_clocks(v) for k, v in value.items() if k not in _CLOCK_FIELDS}
+    if isinstance(value, list):
+        return [_without_clocks(v) for v in value]
+    return value
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rules (
@@ -29,7 +45,9 @@ CREATE TABLE IF NOT EXISTS rules (
     created_at TEXT,
     updated_at TEXT,
     last_fired_at TEXT,
-    last_result TEXT
+    last_result TEXT,
+    next_check_at TEXT,
+    next_check_reason TEXT
 );
 CREATE TABLE IF NOT EXISTS signals_latest (
     key TEXT PRIMARY KEY,
@@ -63,6 +81,26 @@ CREATE TABLE IF NOT EXISTS state_history (
     source TEXT NOT NULL, at TEXT, hash TEXT, payload TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_statehist ON state_history(source, id DESC);
+CREATE TABLE IF NOT EXISTS switch_pins (
+    -- A parent's manual flip of one switch. While a pin is live the DYNAMIC rule
+    -- evaluator may not change that switch; a SCHEDULED rule writing it applies and
+    -- clears the pin (the nightly switchoff is the reset). expires_at is only the
+    -- safety net for switches no schedule ever touches.
+    group_name TEXT NOT NULL,
+    service TEXT NOT NULL,
+    state TEXT NOT NULL,          -- the state the parent chose
+    actor TEXT DEFAULT 'user',
+    created_at TEXT,
+    expires_at TEXT,
+    PRIMARY KEY (group_name, service)
+);
+CREATE TABLE IF NOT EXISTS overrides (
+    client TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'unblock',
+    created_at TEXT,
+    expires_at TEXT,            -- NULL = no expiry ("forever", until cancelled)
+    actor TEXT DEFAULT 'user'
+);
 """
 
 
@@ -76,7 +114,28 @@ class DB:
         self._conn.execute("PRAGMA journal_mode=WAL")
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns that CREATE TABLE IF NOT EXISTS won't add to an existing db.
+
+        Cheap and idempotent: read the current columns, ALTER in whatever's missing.
+        Without this, an upgrade over a pre-existing warden.db fails at query time
+        rather than at startup, which is a much worse place to find out.
+        """
+        wanted = {
+            "rules": [("next_check_at", "TEXT"), ("next_check_reason", "TEXT")],
+        }
+        for table, cols in wanted.items():
+            try:
+                have = {r["name"] for r in
+                        self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            except sqlite3.Error:
+                continue
+            for name, decl in cols:
+                if name not in have:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     # ── rules ────────────────────────────────────────────────────────────────
     def upsert_rule(self, rule: Rule) -> None:
@@ -87,16 +146,20 @@ class DB:
         with self._lock:
             self._conn.execute(
                 """INSERT INTO rules (id,text,enabled,compiled,compile_error,source,
-                       created_at,updated_at,last_fired_at,last_result)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)
+                       created_at,updated_at,last_fired_at,last_result,
+                       next_check_at,next_check_reason)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET
                        text=excluded.text, enabled=excluded.enabled,
                        compiled=excluded.compiled, compile_error=excluded.compile_error,
                        source=excluded.source, updated_at=excluded.updated_at,
-                       last_fired_at=excluded.last_fired_at, last_result=excluded.last_result""",
+                       last_fired_at=excluded.last_fired_at, last_result=excluded.last_result,
+                       next_check_at=excluded.next_check_at,
+                       next_check_reason=excluded.next_check_reason""",
                 (rule.id, rule.text, int(rule.enabled), compiled, rule.compile_error,
                  rule.source, rule.created_at, rule.updated_at,
-                 rule.last_fired_at, rule.last_result),
+                 rule.last_fired_at, rule.last_result,
+                 rule.next_check_at, rule.next_check_reason),
             )
             self._conn.commit()
 
@@ -110,7 +173,17 @@ class DB:
             compiled=compiled, compile_error=row["compile_error"], source=row["source"],
             created_at=row["created_at"], updated_at=row["updated_at"],
             last_fired_at=row["last_fired_at"], last_result=row["last_result"],
+            next_check_at=self._col(row, "next_check_at"),
+            next_check_reason=self._col(row, "next_check_reason"),
         )
+
+    @staticmethod
+    def _col(row: sqlite3.Row, name: str) -> Optional[str]:
+        """Tolerate a row from a db that predates a column (belt-and-braces to _migrate)."""
+        try:
+            return row[name]
+        except (IndexError, KeyError):
+            return None
 
     def get_rule(self, rid: str) -> Optional[Rule]:
         row = self._conn.execute("SELECT * FROM rules WHERE id=?", (rid,)).fetchone()
@@ -125,11 +198,14 @@ class DB:
             self._conn.execute("DELETE FROM rules WHERE id=?", (rid,))
             self._conn.commit()
 
-    def touch_rule(self, rid: str, last_fired_at: str, last_result: str) -> None:
+    def touch_rule(self, rid: str, last_fired_at: str, last_result: str,
+                   next_check_at: Optional[str] = None,
+                   next_check_reason: Optional[str] = None) -> None:
         with self._lock:
             self._conn.execute(
-                "UPDATE rules SET last_fired_at=?, last_result=? WHERE id=?",
-                (last_fired_at, last_result, rid),
+                """UPDATE rules SET last_fired_at=?, last_result=?,
+                       next_check_at=?, next_check_reason=? WHERE id=?""",
+                (last_fired_at, last_result, next_check_at, next_check_reason, rid),
             )
             self._conn.commit()
 
@@ -241,11 +317,18 @@ class DB:
 
     # ── state history (progress over time; append only when it changes) ──────
     def record_state_snapshot(self, source: str, state: dict) -> bool:
-        """Append a source's 'state of play' iff it differs from the last stored one
-        (ignoring the volatile 'now' timestamp). Returns True if a new row was written.
-        This is the raw material for analysing Luke's progress over time."""
-        meaningful = {k: v for k, v in state.items() if k not in ("now",)}
-        h = hashlib.sha1(json.dumps(meaningful, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        """Append a source's 'state of play' iff it differs from the last stored one.
+
+        "Differs" means the FACTS moved, so every clock field is stripped before
+        hashing, at any depth — an adapter stamps `now` at the top and `collected_at`
+        inside data_quality, and with those in the hash every poll looked like a change
+        (an hour of identical Atom data archived 15 times a day). The return value is
+        load-bearing beyond the archive: SourceRegistry uses it to decide whether new
+        data is worth waking a sleeping rule for, and "always changed" is the same as
+        "never changed" for that purpose.
+        """
+        h = hashlib.sha1(json.dumps(_without_clocks(state), sort_keys=True,
+                                    default=str).encode("utf-8")).hexdigest()
         with self._lock:
             row = self._conn.execute(
                 "SELECT hash FROM state_history WHERE source=? ORDER BY id DESC LIMIT 1",
@@ -265,6 +348,82 @@ class DB:
         return [{"at": r["at"], "state": json.loads(r["payload"])} for r in rows]
 
     # ── kv (cursors, misc) ───────────────────────────────────────────────────
+    # ── device overrides ─────────────────────────────────────────────────────
+    # An override exempts ONE device from Warden's group writes until it expires,
+    # so a scheduled rule can't silently undo a parent's manual unblock.
+    def upsert_override(self, o: DeviceOverride) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO overrides (client, kind, created_at, expires_at, actor) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(client) DO UPDATE SET "
+                "kind=excluded.kind, created_at=excluded.created_at, "
+                "expires_at=excluded.expires_at, actor=excluded.actor",
+                (o.client, o.kind, o.created_at, o.expires_at, o.actor),
+            )
+            self._conn.commit()
+
+    def list_overrides(self) -> list[DeviceOverride]:
+        rows = self._conn.execute("SELECT * FROM overrides ORDER BY client").fetchall()
+        return [DeviceOverride(**dict(r)) for r in rows]
+
+    def get_override(self, client: str) -> Optional[DeviceOverride]:
+        r = self._conn.execute("SELECT * FROM overrides WHERE client=?", (client,)).fetchone()
+        return DeviceOverride(**dict(r)) if r else None
+
+    def delete_override(self, client: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM overrides WHERE client=?", (client,))
+            self._conn.commit()
+
+    def expired_overrides(self, now_iso: str) -> list[DeviceOverride]:
+        """Overrides whose time is up. NULL expires_at ('forever') never qualifies."""
+        rows = self._conn.execute(
+            "SELECT * FROM overrides WHERE expires_at IS NOT NULL AND expires_at <= ?",
+            (now_iso,),
+        ).fetchall()
+        return [DeviceOverride(**dict(r)) for r in rows]
+
+    # ── switch pins (manual flips that outrank the dynamic evaluator) ────────
+    def pin_switch(self, group: str, service: str, state: str, actor: str,
+                   expires_at: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO switch_pins (group_name,service,state,actor,created_at,expires_at) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(group_name,service) DO UPDATE SET "
+                "state=excluded.state, actor=excluded.actor, "
+                "created_at=excluded.created_at, expires_at=excluded.expires_at",
+                (group, service, state, actor, utcnow().isoformat(), expires_at))
+            self._conn.commit()
+
+    def active_pins(self, now_iso: str) -> dict[tuple[str, str], dict]:
+        """Live pins as {(group, service): row}. Expired rows are pruned as a side
+        effect so the table cannot accumulate stale holds."""
+        with self._lock:
+            self._conn.execute("DELETE FROM switch_pins WHERE expires_at <= ?", (now_iso,))
+            self._conn.commit()
+            rows = self._conn.execute("SELECT * FROM switch_pins").fetchall()
+        return {(r["group_name"], r["service"]): dict(r) for r in rows}
+
+    def clear_pins(self, switches: list[tuple[str, str]]) -> int:
+        """Remove pins for these (group, service) pairs; returns how many existed."""
+        if not switches:
+            return 0
+        n = 0
+        with self._lock:
+            for g, svc in switches:
+                cur = self._conn.execute(
+                    "DELETE FROM switch_pins WHERE group_name=? AND service=?", (g, svc))
+                n += cur.rowcount
+            self._conn.commit()
+        return n
+
+    def active_override_names(self, now_iso: str) -> set[str]:
+        rows = self._conn.execute(
+            "SELECT client FROM overrides WHERE expires_at IS NULL OR expires_at > ?",
+            (now_iso,),
+        ).fetchall()
+        return {r["client"] for r in rows}
+
     def get_kv(self, k: str) -> Optional[str]:
         row = self._conn.execute("SELECT v FROM kv WHERE k=?", (k,)).fetchone()
         return row["v"] if row else None
@@ -275,3 +434,11 @@ class DB:
                 "INSERT INTO kv (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v",
                 (k, v))
             self._conn.commit()
+
+    def del_kv(self, k: str) -> bool:
+        """Forget a key. Returns whether there was one — used to drop a weekly target
+        override so the source's own published number takes over again."""
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM kv WHERE k=?", (k,))
+            self._conn.commit()
+            return cur.rowcount > 0

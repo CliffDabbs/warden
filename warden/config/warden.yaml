@@ -18,9 +18,22 @@ adguard:
 groups:
   kids:
     tag: user_child             # AdGuard client tag (usable in $ctag custom rules)
+    # Tag-based membership: an AdGuard client joins automatically when it carries ALL
+    # of these tags — no `clients:` entry needed. Tag a device in AdGuard and Warden
+    # picks it up on the next read. Devices named in `clients:` keep the group set
+    # there. Groups are tried most-specific-first (most tags wins), and a device joins
+    # at most one group, so it never gets conflicting writes.
+    #
+    # It's `user_child` that makes a device a kid's device — a device_* tag only says
+    # what KIND of hardware it is. So match on the person, and add hardware tags only
+    # to narrow further, e.g. a group matching [user_child, device_tablet] would claim
+    # a child's tablet ahead of this one while leaving their laptop here.
+    match_tags: [user_child]
     baseline: { safe_search: true, parental: true, safebrowsing: true }
-    default_blocked: [youtube, tiktok, roblox]
+    # only ids Warden manages belong here; tiktok/roblox are blocked in AdGuard directly
+    default_blocked: [youtube]
   tv:
+    match_tags: [device_tv]
     baseline: { safe_search: false, parental: false, safebrowsing: false }
     default_blocked: [youtube]
 
@@ -31,17 +44,36 @@ clients:
   # Luke's tablet — add its DHCP-reserved IP here when provisioned, then it joins
   # the kids group automatically and Luke's Atom signal will gate it.
   # - { name: "Luke iPad",    group: kids, ids: ["10.7.11.33"], subject: luke }
-  - { name: "Living Room TV", group: tv,   ids: ["10.7.11.32"] }
+  # ids are display-only (AdGuard clients are matched by NAME); kept accurate anyway
+  - { name: "Living Room TV", group: tv,   ids: ["10.7.11.155"] }
   - { name: "Shield",         group: tv,   ids: ["10.7.11.30"] }
 
 # Each service becomes a toggle in the UI, per listed group. 'id' must be a valid
 # AdGuard blocked-service id (there are 136 available; see /control/blocked_services/all).
 services:
-  - { id: youtube, name: YouTube, icon: youtube,   groups: [kids, tv] }
-  - { id: netflix, name: Netflix, icon: film,      groups: [kids, tv] }
-  - { id: tiktok,  name: TikTok,  icon: music,     groups: [kids] }
-  - { id: roblox,  name: Roblox,  icon: gamepad,   groups: [kids] }
-  - { id: discord, name: Discord, icon: message,   groups: [kids] }
+  - { id: youtube,     name: YouTube,  icon: youtube, groups: [kids, tv] }
+  - { id: netflix,     name: Netflix,  icon: film,    groups: [kids, tv] }
+  - { id: disneyplus,  name: Disney+,  icon: film,    groups: [kids, tv] }
+  # Plex — PARTIAL by DNS alone. AdGuard's rules cover plex.bz, plex.direct, plex.tv and
+  # plexapp.com, which stops sign-in, server discovery via plex.tv, remote streaming and
+  # metadata. It does NOT stop local playback from the LAN server (10.7.11.21): clients
+  # find it by GDM broadcast and connect straight to the IP, never asking DNS. On this
+  # network plex.direct doesn't resolve anyway — the upstream resolver (pfsense,
+  # 10.7.11.1) strips private addresses from public answers — so blocking it changes
+  # nothing locally. To actually stop local playback, block kids' devices -> 10.7.11.21
+  # tcp/32400 (and udp/32410-32414 for discovery) on pfsense. See USER-GUIDE.md.
+  - { id: plex,        name: Plex,     icon: film,    groups: [kids, tv] }
+  # Xbox Cloud Gaming (xCloud) streamed to the TV — no console involved. AdGuard's
+  # xboxlive rules are ||xboxlive.com^ + gamepass/xboxservices, and the stream endpoints
+  # (xgpuweb/xhome.gssv-play-prod.xboxlive.com) are subdomains of xboxlive.com, so this
+  # does stop play. Note www.xbox.com is NOT in AdGuard's list: the launcher page still
+  # loads, it just can't start a game. See USER-GUIDE.md if you want the page gone too.
+  - { id: xboxlive,    name: Xbox,     icon: gamepad, groups: [kids, tv] }
+  # TikTok / Roblox / Discord are deliberately NOT listed here. They stay blocked in
+  # AdGuard permanently and are outside what the Atom rules reward or withhold — listing
+  # them would put them in the kids group, and a group-wide unblock would hand them back
+  # every time Luke got on track. Warden only ever adds/removes the ids it manages, so
+  # leaving them out means it never touches them.
 
 # People. Contexts are date-driven (e.g. class rollover) so profiles follow the
 # child automatically — mirrors the digest-platform subject-profile design.
@@ -61,7 +93,11 @@ sources:
     adapter: atom
     display_name: "Atom Learning"
     enabled: true
-    schedule: "*/30 6-21 * * *"     # cron: every 30 min, 6am–9pm
+    # Hourly ON THE HOUR — the same anchor the rules use for their own wake-ups, which
+    # is safe because collection now happens BEFORE evaluation: a rule waking on the
+    # hour waits for this poll (or runs it) instead of reading the previous hour's data.
+    # A poll that brings back new facts also re-evaluates the dynamic rules immediately.
+    schedule: "0 6-21 * * *"
     subject: luke
     secrets: {}                     # Google SSO — no username/password; the session is captured
     options:
@@ -72,17 +108,186 @@ sources:
       state_file: "data/atom_state.json"
       student_id: "_18788523414932504"   # Luke (from recon); blank = auto-discover per account
       tz: "Europe/London"
-      daily_target_islands: 1            # topics completed today to count as "did learning"
+      # Only used when a week has NO weekly target at all (see below) — otherwise the
+      # daily bar is worked out from the weekly number, not from this.
+      daily_target_islands: 1
+      # The week's workload comes from ATOM, read live each run: learning-journey-targets
+      # gives this ISO week's islands per subject for Luke's year group and course, plus
+      # any mock test set for the week. That is the number on his own dashboard and it
+      # changes every week (17 w/c 31 Aug 2026; 20 islands + 1 mock = 21 the week after).
+      # A mock test counts as one item of the plan, exactly as Atom counts it.
+      #
+      # You can still override a single week in the UI (Sources -> Atom) or via
+      # PUT /api/sources/atom/target — for illness, half term, a week worth pushing —
+      # and DELETE the same path (or "Use Atom's N") puts the plan back in charge.
+      # weekly_island_target below is only the fallback for a run that could not read the
+      # plan at all; the hub also parks the last plan it saw there, so a one-off API
+      # failure keeps last night's number rather than this stale one.
+      #
+      # Warden spreads whichever number won over the days itself: whatever is still
+      # outstanding at the start of each day, divided by the days the week has left (today
+      # included) and rounded up. So 21 asks for 3 a day from Monday, a day missed raises
+      # the days that follow, and a week finished early asks for nothing more. That number
+      # is published as atom.luke.islands_due_today and is what daily_complete is judged
+      # against.
+      #
+      # year_group / id_course: pin only if the account's own values are ever wrong —
+      # they are read from the profile (baseYearGroup) and the active enrolment.
+      weekly_island_target: 19
       require_assignments_done: true     # also require parent-set work not left unstarted
   weduc:
     adapter: weduc
     display_name: "Weduc / ReachMoreParents"
-    enabled: false                  # enable once creds are set
-    schedule: "0 7,13,18 * * *"     # 3x daily
+    enabled: true
+    # Once a day, on the hour. School data moves slowly (forms, term dates, a weekly
+    # newsletter), and each run may pull a ~28 MB PDF — no reason to poll harder.
+    schedule: "0 7 * * *"
     subject: luke
     secrets: { username: WEDUC_USERNAME, password: WEDUC_PASSWORD }
     options:
-      base_url: "https://ui.app.weduc.co.uk"
+      # The portal is a Blazor WASM app on ui.app.weduc.co.uk, but its REST API is a
+      # DIFFERENT host (the SPA reads it from its own /appsettings.json). Asking the
+      # UI host for an API path returns the SPA shell, not JSON.
+      api_base: "https://app.weduc.co.uk"
+      ui_base: "https://ui.app.weduc.co.uk"
+      # Session captured once (username+password, no human needed):
+      #   python -m warden.adapters.weduc.login
+      # The adapter re-captures by itself when this expires.
+      state_file: "data/weduc_state.json"
+      # Ids observed on this account; blank would need discovery via /rest/user/getContext.
+      user_id: "281474978315305"      # Cliff (account holder)
+      child_id: "281474978315151"     # Luke
+      entity_id: "281474976822310"    # Seabrook C of E Primary
+      inbox_folder_id: "281474986227878"
+      # Newsletter PDFs carry per-class and per-child content that exists nowhere else in
+      # the portal (a class sports result; a "Merit Book" naming individual children).
+      # The adapter caches them here; the hub reads them (warden/documents.py).
+      files_dir: "data/weduc_files"
+      cache_extensions: "pdf"        # comma-separated; only these are downloaded
+      max_attachment_mb: 60          # skip anything larger
+      # These newsletters are image-rich, so the text layer alone misses the merit lists.
+      # Each page is rendered and sent with the text. 140 dpi keeps ~6 pages near 2 MB.
+      pdf_dpi: 140
+      pdf_max_pages: 12
+      # School lunches (/rest/dinner/getEvents). The window only needs to cover the
+      # reminders view plus a little history for context.
+      meals_days_back: 7
+      meals_days_ahead: 35
+  parentpay:
+    adapter: parentpay
+    display_name: "ParentPay (clubs)"
+    enabled: true
+    # Twice a day. The 07:00 run is the important one: the booking cut-off is 09:00 the
+    # DAY BEFORE a session, so a 07:00 check still leaves two hours to book tomorrow.
+    # An evening run catches anything booked or cancelled during the day.
+    schedule: "0 7,18 * * *"
+    subject: luke
+    # No ParentPay password exists. The session is minted from the Weduc one via the
+    # portal's partner-login SSO, so these are the SAME credentials the weduc source
+    # uses — nothing new to configure.
+    secrets: { weduc_username: WEDUC_USERNAME, weduc_password: WEDUC_PASSWORD }
+    options:
+      state_file: "data/parentpay_state.json"
+      weduc_state_file: "data/weduc_state.json"
+      # Ids from the Weduc handoff (entity/child) and from the ParentPay club URLs.
+      entity_id: "281474976822310"      # Seabrook C of E Primary
+      child_id: "281474978315151"       # Luke (Weduc id, used to mint the SSO token)
+      consumer_id: "22505613"           # Luke (ParentPay id, from the ClubsCalendar URL)
+      # Each club is one ClubsCalendar page. `kind` is what a rule/reminder reasons with
+      # ("is he in before school?"), so keep it meaningful rather than cosmetic.
+      clubs:
+        - { id: "157545", name: "Breakfast Club",    kind: before_school }
+        - { id: "172983", name: "After School Club", kind: after_school }
+      days_ahead: 21
+      tz: "Europe/London"
+
+# One-tap buttons on the Dashboard. Add, remove or reword freely — the UI is built
+# from this list, so a new entry becomes a new button with no code change.
+#   steps: each is either
+#     { service: <id>, state: allowed|blocked }        -> every group that has it
+#     { service: <id>, groups: [tv], state: ... }      -> only those groups
+#     { group: <name>, state: ... }                    -> that group's whole service list
+#   revert_after_minutes: snapshot the affected switches and put them back later
+#   confirm: ask before firing        style: default | good | warn | danger
+quick_actions:
+  - id: streaming_on_2h
+    label: "Streaming on (2h)"
+    description: "Unblock YouTube, Netflix and Disney+ everywhere, then put it all back"
+    icon: play
+    style: good
+    revert_after_minutes: 120
+    steps:
+      - { service: youtube,    state: allowed }
+      - { service: netflix,    state: allowed }
+      - { service: disneyplus, state: allowed }
+
+  - id: streaming_on
+    label: "Streaming on"
+    description: "Unblock all streaming everywhere and leave it — until a rule closes it"
+    icon: play
+    style: default
+    steps:
+      - { service: youtube,    state: allowed }
+      - { service: netflix,    state: allowed }
+      - { service: disneyplus, state: allowed }
+
+  - id: disney_on
+    label: "Disney+ everywhere"
+    description: "Unblock Disney+ on the TVs and the kids' tablets"
+    icon: film
+    style: default
+    steps:
+      - { service: disneyplus, state: allowed }
+
+  - id: streaming_off
+    label: "Streaming off"
+    description: "Block YouTube, Netflix and Disney+ everywhere"
+    icon: stop
+    style: warn
+    steps:
+      - { service: youtube,    state: blocked }
+      - { service: netflix,    state: blocked }
+      - { service: disneyplus, state: blocked }
+
+  - id: kids_clamp
+    label: "Block everything (kids)"
+    description: "Every managed service off for the kids group, right now"
+    icon: shield
+    style: danger
+    confirm: true
+    steps:
+      - { group: kids, state: blocked }
+
+# Machines Warden can run commands on over SSH. Credentials come from .env, never here.
+hosts:
+  qnap:
+    address: 10.7.11.21           # the NAS running Plex
+    port: 22
+    user_env: QNAP_SSH_USER
+    password_env: QNAP_SSH_PASS
+
+# Services on those hosts that Warden can start and stop. This is the escape hatch for
+# things DNS filtering cannot reach: a media server on your own LAN answers on its IP
+# whatever the resolver says, so the only absolute control is the process itself.
+#
+# NOTE these are GLOBAL — a stopped service is stopped for everyone in the house, and
+# anything mid-stream ends. They are deliberately kept apart from the per-group toggles.
+#
+# The start/stop commands below assume Plex is a QNAP QPKG. If it turns out to be a
+# Container Station container, run  GET /api/hosts/qnap/discover  and swap in the docker
+# form (e.g. "docker start plex" / "docker stop plex", status "docker inspect -f
+# '{{.State.Status}}' plex").
+managed_services:
+  - id: plex_server
+    name: "Plex server"
+    description: "Stops Plex on the NAS. Absolute — but it stops it for everyone."
+    host: qnap
+    icon: film
+    confirm: true
+    start:  "/sbin/qpkg_cli --start PlexMediaServer"
+    stop:   "/sbin/qpkg_cli --stop PlexMediaServer"
+    status: "/sbin/qpkg_cli --status PlexMediaServer"
+    status_running_match: "running"
 
 # Signal vocabulary — what sources emit and what plain-English rules can name.
 # The rule compiler maps free text onto these keys. type: bool | number | string.
@@ -96,7 +301,12 @@ signals:
     type: number
     source: atom
     subject: luke
-    describe: "Number of Atom topics Luke has completed today"
+    describe: "Number of Atom islands Luke has completed today"
+  - key: "atom.luke.islands_due_today"
+    type: number
+    source: atom
+    subject: luke
+    describe: "Islands Luke needs today to stay on for this week's target"
   - key: "atom.luke.assignments_outstanding"
     type: number
     source: atom
@@ -107,6 +317,31 @@ signals:
     source: weduc
     subject: luke
     describe: "Number of outstanding Weduc forms for Luke"
+  - key: "weduc.luke.school_day_today"
+    type: bool
+    source: weduc
+    subject: luke
+    describe: "Luke is at school today (term time, a weekday, and no INSET/closure)"
+  - key: "weduc.luke.lunch_booked_tomorrow"
+    type: bool
+    source: weduc
+    subject: luke
+    describe: "A school lunch is ordered for Luke tomorrow"
+  - key: "parentpay.luke.club_booked_tomorrow"
+    type: bool
+    source: parentpay
+    subject: luke
+    describe: "Luke is booked into breakfast or after-school club tomorrow"
+  - key: "parentpay.luke.payments_outstanding"
+    type: number
+    source: parentpay
+    subject: luke
+    describe: "Charges from the school still to pay (trips, swimming) — running meal/club balances excluded"
+  - key: "parentpay.luke.club_unbooked_tomorrow"
+    type: bool
+    source: parentpay
+    subject: luke
+    describe: "A club session tomorrow is still bookable and Luke is not booked in"
 
 # Rules the system ships with (also editable/creatable in the UI). Each is authored
 # in plain English and compiled to a typed AST on load. These three are the user's

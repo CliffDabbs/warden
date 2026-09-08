@@ -1,13 +1,15 @@
 {
   "id": "atom",
   "display_name": "Atom Learning",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "auth_type": "google_sso_session",
-  "capabilities": ["islands", "learning-resources", "subjects"],
+  "capabilities": ["islands", "learning-resources", "subjects",
+                   "learning-journey-targets"],
   "secrets_required": [],
   "emits_signals": [
     "atom.<subject>.daily_complete",
     "atom.<subject>.islands_completed_today",
+    "atom.<subject>.islands_due_today",
     "atom.<subject>.assignments_outstanding"
   ]
 }

@@ -11,14 +11,30 @@ services:
     env_file: .env
     ports:
       - "8080:8080"
+    # Surfaces a real health state in `docker ps` instead of a bare "Up" — a hung
+    # server still counts as running, and unless-stopped would never notice.
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import httpx; httpx.get('http://127.0.0.1:8080/healthz', timeout=5).raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    # This runs 24/7 and polls hourly; without a cap the json log grows forever.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
     volumes:
       # live-edit your controls without rebuilding
       - ./config:/app/config:ro
-      # persist rules / signals / audit
-      - warden-data:/app/data
+      # persist rules / signals / audit — AND carry the captured source sessions
+      # (data/atom_state.json, data/weduc_state.json) straight in from the host.
+      # A bind mount, not a named volume, so dropping a freshly-captured session in
+      # is a file copy rather than a `docker cp`. Must stay writable: the Atom
+      # adapter rewrites the refreshed sliding cookie here after every poll.
+      - ./data:/app/data
     # AdGuard is on the LAN; host networking is the simplest way to reach 10.7.11.29.
     # If you prefer bridge networking, remove this and ensure ADGUARD_URL is reachable.
     # network_mode: host
-
-volumes:
-  warden-data:
