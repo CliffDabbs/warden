@@ -500,6 +500,15 @@ textarea::placeholder, input::placeholder { color: var(--text-faint); }
 .audit-ok.n { color: var(--danger); }
 @keyframes fadein { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
 
+/* the message reading still running behind an already-drawn Reminders page */
+.rem-reading {
+  margin-left: auto; font-size: 12.5px; color: var(--accent-hi);
+  background: var(--accent-soft); border-radius: var(--radius-pill);
+  padding: 3px 10px; animation: pulse-soft 1.6s ease-in-out infinite;
+}
+@keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) { .rem-reading { animation: none; } }
+
 /* ── LLM calls in the feed, and the transcript popout ──────────────────────*/
 /* A model call is a quieter kind of event than a switch being thrown: it says what
    Warden asked, not what it changed. Toned down here, but never hidden by default. */

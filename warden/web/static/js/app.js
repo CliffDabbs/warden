@@ -207,6 +207,7 @@ const store = {
   reminders: null,    // GET /reminders payload (school days, events, forms)
   remindersBusy: false,    // a re-read is in flight (it costs an LLM call)
   remindersAllDays: false, // "show more days" expanded past the first week
+  remindersPoll: null,     // fallback timer while the message reading is still running
   showLlm: true,      // include the "llm_call" lines in the Activity feed
   llmOpen: null,      // id of the exchange whose transcript is on screen
 };
@@ -261,6 +262,8 @@ const live = {
       case "signals": upsertSignals(msg.signals || []); if (store.view === "sources") render(); break;
       case "signal":  applySignal(msg.signal); break;
       case "audit":   applyAudit(msg.entry); break;
+      // the message reading finished in the background — pick it up if we're looking
+      case "reminders": if (store.view === "reminders") loadView("reminders"); break;
       case "error":   toast(msg.detail || "server error", "error"); break;
     }
   },
@@ -752,11 +755,25 @@ function renderReminders() {
   if (!r) return loading();
   const wrap = h("div", {});
   const subj = r.subject || {};
+  // Reading the messages takes ~20s, so the server hands the page over without it and
+  // sends a "reminders" event when it lands. The WS does the waking; this timer is the
+  // fallback for a dropped socket, and stops itself as soon as the reading is in.
+  const pending = !!(r.llm && r.llm.pending);
+  clearTimeout(store.remindersPoll);
+  store.remindersPoll = pending
+    ? setTimeout(() => { if (store.view === "reminders") loadView("reminders"); }, 10000)
+    : null;
 
   wrap.append(h("div", { class: "section-head" },
     h("h2", {}, "Daily reminders"),
     h("span", { class: "hint" },
-      [subj.name, subj["class"]].filter(Boolean).join(" · ") || "school portal")));
+      [subj.name, subj["class"]].filter(Boolean).join(" · ") || "school portal"),
+    pending
+      ? h("span", { class: "rem-reading", title:
+          "The school messages are being read now — anything found in them will appear "
+          + "here on its own. Everything else on this page is already up to date." },
+          "reading messages…")
+      : null));
 
   // Not-live or stale data changes what the page is worth — say so before anything else.
   const dq = r.data || {};
@@ -1074,7 +1091,9 @@ function newsletterCard(nl) {
 function remindersFoot(r) {
   const llm = r.llm || {};
   const bits = [];
-  if (llm.used) {
+  if (llm.pending) {
+    bits.push("reading the school messages now — they'll appear here when it's done");
+  } else if (llm.used) {
     bits.push(`${llm.kept} reminder${llm.kept === 1 ? "" : "s"} read from messages` +
       (llm.cached ? " (cached)" : "") + (llm.model ? ` · ${llm.model}` : ""));
     if (llm.dropped) bits.push(`${llm.dropped} rejected as unverified`);

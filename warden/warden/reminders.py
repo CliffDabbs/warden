@@ -29,10 +29,12 @@ once per genuine change rather than once per page view.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import re
+import time
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -95,15 +97,32 @@ _SYSTEM = (
 )
 
 
+# How long a failed reading is remembered before the page will try again. Without
+# this, a read that fails leaves the page "pending", and every reload of it starts
+# another one — a broken model call would loop for as long as the tab is open.
+_RETRY_FAILED_READ_AFTER = 600          # seconds
+
+
 class ReminderBuilder:
     """Builds the Reminders page payload from stored Weduc data."""
 
     def __init__(self, ctx) -> None:
         self.ctx = ctx
+        self._reading = False                        # a background reading is in flight
+        self._read_failures: dict[str, dict] = {}    # cache key -> {"at", "error"}
+        self._bg: set = set()                        # keep background tasks referenced
 
     # ── public entrypoint ────────────────────────────────────────────────────
-    async def build(self, force: bool = False) -> dict[str, Any]:
-        """The whole page, deterministic parts always fresh, LLM part cached."""
+    async def build(self, force: bool = False, wait: bool = True) -> dict[str, Any]:
+        """The whole page: deterministic parts always fresh, the LLM part cached.
+
+        `wait=False` is the page-load path. Reading the messages takes 15-20 seconds,
+        and blocking the payload on it meant the page sat on "Loading…" showing nothing
+        at all — not the school days, not the meals, not the clubs, none of which need
+        the model. So a cold reading is skipped, the page returns immediately with
+        `llm.pending`, and the reading runs in the background; when it lands it is
+        cached and a `reminders` event tells the open page to pick it up.
+        """
         tz = self._tz()
         now = datetime.now(tz)
         today = now.date()
@@ -149,7 +168,8 @@ class ReminderBuilder:
         unverified: list[dict] = []
         try:
             found, llm_meta, unverified = await self._llm_reminders(
-                items, today, tz, subject, child_class, classes, force=force)
+                items, today, tz, subject, child_class, classes, force=force,
+                cached_only=not (wait or force))
             for rem in found:
                 by_date.setdefault(rem["date"], []).append(rem)
         except Exception as e:                      # a reading failure must not blank the page
@@ -160,6 +180,8 @@ class ReminderBuilder:
         # A nudge to order meals is pointless once the meals are ordered — drop it after
         # the LLM pass, when both the prose and the booking data are in hand.
         llm_meta["suppressed_answered"] = self._drop_answered_meal_asks(by_date, state)
+        if llm_meta.get("pending"):
+            self._start_background_read()
 
         # Days the spine didn't cover (an LLM or newsletter date past the window) still
         # need a row, or the reminder simply vanishes.
@@ -676,9 +698,36 @@ class ReminderBuilder:
         return s if len(s) <= n else s[: n - 1].rsplit(" ", 1)[0] + "…"
 
     # ── the LLM pass ─────────────────────────────────────────────────────────
+    def _start_background_read(self) -> None:
+        """Do the reading off the request, then tell any open page to reload.
+
+        One at a time: several page loads (or a browser refresh mid-read) must not each
+        start their own 20-second call against the same messages.
+        """
+        if self._reading:
+            return
+        self._reading = True
+
+        async def run() -> None:
+            try:
+                await self.build(wait=True)          # does the read and caches it
+            except Exception as e:
+                log.warning("background reminder reading failed: %s: %s", type(e).__name__, e)
+            finally:
+                self._reading = False
+            try:
+                await self.ctx.events.publish({"type": "reminders",
+                                               "reason": "message reading finished"})
+            except Exception:
+                log.exception("could not announce the finished reminder reading")
+
+        task = asyncio.create_task(run())
+        self._bg.add(task)
+        task.add_done_callback(self._bg.discard)
+
     async def _llm_reminders(self, items: list, today: date, tz, subject: dict,
                              child_class: str, classes: dict[str, set[str]],
-                             force: bool = False,
+                             force: bool = False, cached_only: bool = False,
                              ) -> tuple[list[dict], dict, list[dict]]:
         compiler = self.ctx.compiler
         if compiler is None or not compiler.has_llm():
@@ -692,6 +741,15 @@ class ReminderBuilder:
 
         key = self._cache_key(pool, child_class)
         cached = None if force else self.ctx.db.get_kv(key)
+        if cached is None and cached_only:
+            # Nothing read for these messages yet, and the caller can't wait 20 seconds
+            # for it. Say so — the page renders everything else and fills this in later.
+            fail = self._read_failures.get(key)
+            if fail and (time.time() - fail["at"]) < _RETRY_FAILED_READ_AFTER:
+                return [], {"used": False, "pending": False, "kept": 0, "dropped": 0,
+                            "reason": f"last reading failed — {fail['error']}"}, []
+            return [], {"used": False, "pending": True, "kept": 0, "dropped": 0,
+                        "reason": "reading the latest messages…"}, []
         if cached:
             try:
                 data = json.loads(cached)
@@ -705,8 +763,15 @@ class ReminderBuilder:
 
         user = self._llm_user_message(pool, today, subject, child_class)
         model = self.ctx.settings.eval_model or None
-        data = await compiler.complete_json(_SYSTEM, user, model=model,
-                                            purpose="reminders")
+        try:
+            data = await compiler.complete_json(_SYSTEM, user, model=model,
+                                                purpose="reminders")
+        except Exception as e:
+            # Remember it against these exact messages, so the page reports the failure
+            # instead of asking for the same doomed reading on every reload.
+            self._read_failures[key] = {"at": time.time(), "error": f"{type(e).__name__}: {e}"}
+            raise
+        self._read_failures.pop(key, None)
         data["_model"] = model or self.ctx.settings.llm_model
         self.ctx.db.set_kv(key, json.dumps(data, default=str))
 

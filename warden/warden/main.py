@@ -14,7 +14,7 @@ from urllib.parse import parse_qs
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .auth import COOKIE, MAX_AGE, Auth, login_page, make_auth_middleware
@@ -128,9 +128,23 @@ def build_app() -> FastAPI:
     if (WEB_DIR / "static").is_dir():
         app.mount("/static", StaticFiles(directory=str(WEB_DIR / "static")), name="static")
 
-    @app.get("/")
-    async def index() -> FileResponse:
-        return FileResponse(str(WEB_DIR / "index.html"))
+    @app.get("/", response_class=HTMLResponse)
+    async def index() -> HTMLResponse:
+        """The SPA shell, with its asset URLs stamped with their own mtimes.
+
+        Nothing sets Cache-Control on /static, so a browser is free to guess how long
+        app.js stays fresh — and it guesses days for a file that hasn't changed in a
+        while. After a deploy that showed up as new API behaviour driving an old UI:
+        the server had the feature, the page had no button for it, and the only fix was
+        a hard refresh nobody thinks to do. Stamping the URLs makes a changed file a
+        different URL, so an upgrade lands the moment the container restarts.
+        """
+        html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+        for asset in ("/static/css/app.css", "/static/js/app.js"):
+            f = WEB_DIR / asset.lstrip("/")
+            stamp = int(f.stat().st_mtime) if f.exists() else 0
+            html = html.replace(asset, f"{asset}?v={stamp}")
+        return HTMLResponse(html, headers={"Cache-Control": "no-cache"})
 
     # ── auth routes (active only when a password is configured) ───────────────
     @app.get("/login", response_class=HTMLResponse)

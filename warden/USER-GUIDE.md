@@ -126,10 +126,18 @@ Warden worked out the date from when the message was sent. Those are the ones wo
 second glance.
 
 Reminders are built from data Weduc has **already** collected — the page never scrapes, so
-it loads instantly. Weduc is polled once a day at 07:00; if the banner says the data is
-stale, run the source from **Sources → Weduc → Run live**. **Re-read messages** at the
-bottom re-runs the reading instead of reusing the cached one; it costs one LLM call, so it
-is a button rather than something that happens on every page view.
+it loads instantly. That includes the days a new message has just arrived: reading messages
+takes the model 15–20 seconds, so the page never waits for it. Everything computed in plain
+code — school days, lunches, clubs, forms, payments — is on screen straight away, a
+*reading messages…* chip appears top right, and anything found in the messages drops in by
+itself when the reading lands. (Before, the whole page sat on "Loading…" for those 20
+seconds and showed nothing at all.)
+
+Weduc is polled once a day at 07:00; if the banner says the data is stale, run the source
+from **Sources → Weduc → Run live**. **Re-read messages** at the bottom re-runs the reading
+instead of reusing the cached one — that button does wait, since you asked for it — and it
+costs one LLM call, which is why it isn't done on every page view. A reading that fails is
+remembered for ten minutes, so a broken model call can't loop.
 
 Without an `ANTHROPIC_API_KEY` the page still works — term dates, calendar events and
 forms are all computed in plain code. You lose only the reminders read out of message
