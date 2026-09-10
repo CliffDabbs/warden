@@ -1,3 +1,13 @@
+> **Legacy — the Home Assistant era.** Superseded by
+> [Warden](../warden/README.md), which drives AdGuard directly: the per-service switches here
+> are now the Dashboard's toggles, and the HA automations are Warden rules. Not maintained,
+> not deployed.
+>
+> **Still live and still the only record of it:** the DNS-bypass countermeasures at the
+> firewall — the port-53 NAT redirect, the DoH/DoT blocklist, TCP 853 and QUIC on UDP/443.
+> Every block Warden applies silently depends on those being in place, and Warden does not
+> configure them.
+
 # Project A — Block YouTube for kids, allow on TVs on demand
 
 YouTube is genuinely hard to block because the apps use QUIC (UDP/443), a huge shared Google CDN (`googlevideo.com`), and will fall back to their own DNS (DoH / hardcoded 8.8.8.8) if you only block at one layer. So this is **four layers**. Skip any one and it leaks.

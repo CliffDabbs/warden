@@ -20,7 +20,7 @@ This repo used to drive AdGuard through Home Assistant (see `../packages`, `../i
 | Old piece | Became |
 |---|---|
 | `iac/deploy.py` reconciling `screentime.yaml` → AdGuard + HA | Warden's **AdGuard service** + `config/warden.yaml` (live, no HA) |
-| The multi-source **digest platform** contract (`docs/sourceadapterCONTRACT.md`) | Warden's **pluggable source adapters** + **signal bus** |
+| The multi-source **digest platform** contract (`../docs/sourceadapterCONTRACT.md`) | Warden's **pluggable source adapters** + **signal bus** |
 | HA automations / schedules | Warden's **plain-English rules engine** (cron + signal triggers) |
 
 ## Architecture
@@ -30,25 +30,30 @@ This repo used to drive AdGuard through Home Assistant (see `../packages`, `../i
         │                                    │
         │              ┌─────────────────────┼───────────────────────┐
         ▼              ▼                     ▼                        ▼
-   Dashboard     AdGuard service       Rules engine            Source registry
-   Reminders     (live + fake)         + scheduler             (pluggable)
-   Rules          clients/services     plain-English → AST      ┌ atom  (Playwright)
-   Sources        rules/protection     cron + signal triggers   ├ weduc (Playwright)
-   Activity                                                     └ parentpay (SSO)
+   Dashboard     AdGuard service      Rules engine            Source registry
+   Reminders     (live + fake)        + scheduler              (pluggable)
+   Devices        clients/services    ⏰ cron + signal          ┌ atom      (Google SSO,
+   Rules          rules/protection    🧠 LLM evaluator         │            captured once)
+   Sources                             (self-scheduling)       ├ weduc     (form login,
+   Activity      Host control                                  │            self-recapturing)
+   About         (SSH → QNAP)                                  └ parentpay (SSO off Weduc)
                        │                     ▲                        │ emits
                        ▼                     │ reacts                 ▼
                 AdGuard Home @10.7.11.29   Signal bus ◄──────────  Signals
-                                           (latest + history)     SQLite (state)
+                Plex on the NAS @.21       (latest + history)     SQLite (state + history)
 ```
 
 - **Sources are pluggable.** Adding one (e.g. a rugby-club WhatsApp export) means writing
   one adapter to `warden/adapters/base.py` and adding a block to `config/warden.yaml` —
-  the core never changes. `atom` and `weduc` ship as examples.
+  the core never changes. `atom`, `weduc` and `parentpay` ship as examples.
 - **Signals are the bridge.** An adapter emits typed facts like
   `atom.luke.daily_complete = true`; rules react to them.
-- **Runs anywhere.** With no AdGuard reachable it uses an in-memory *fake*; with no
-  Anthropic key the rule compiler uses a deterministic parser; with no browser the
-  scrapers use fixtures. So it always boots and demos.
+- **Runs anywhere.** With no AdGuard reachable it falls back to an in-memory *fake*
+  (set `ADGUARD_MODE=live` to remove the fallback so failures surface instead); with no
+  Anthropic key *and* no `claude` CLI the rule compiler falls back to a deterministic parser; and every source ships
+  fixtures you can run on demand. So it always boots and demos. What it will *not* do is
+  quietly substitute: a **live** run that cannot reach its portal fails and keeps the
+  previous data, rather than passing fixtures off as real.
 
 ## Quick start (local)
 
@@ -74,21 +79,26 @@ have Chromium ready to go.
 
 ## Configure it — `config/warden.yaml`
 
-One file defines your **groups** (kids/tv + always-on baseline), **clients** (real
-devices, matched to AdGuard by name), **services** (the on/off toggles), **subjects**
-(people), **sources** (scrapers + cron), and the **signal vocabulary** the rule compiler
-understands. Edit it and Warden reflects the change. Secrets never live here — they come
-from `.env` via the names in each source's `secrets:` map.
+One file defines your **groups** (kids/tv, each claiming AdGuard clients by tag — tag a
+device `user_child` and it joins the kids group with no config entry of its own),
+**clients** (only the devices you want tied to a named person), **services** (the on/off
+toggles), **subjects** (people), **sources** (scrapers + cron), **quick_actions** (the
+Dashboard's buttons), **hosts** / **managed_services** (the SSH lever), and the **signal
+vocabulary** the rule compiler understands.
+
+It is read **once at startup** — edit it and restart (`docker compose restart warden`).
+Secrets never live here; they come from `.env` via the names in each source's `secrets:`
+map.
 
 ## How a rule works
 
 1. You type English in the **Rules** tab. Warden shows a live compiled preview.
 2. On save it's compiled to a `CompiledRule` (trigger + conditions + actions) and stored.
 3. **Schedule** triggers ("at 8pm every day") run on a cron scheduler.
-   **Signal** triggers ("when Luke has finished Atom Learning") fire when the signal bus
-   sees the matching transition.
-4. Actions call AdGuard: allow/block a service for a group, disable a whole group
-   ("all kids devices"), toggle protection, or add/remove a filtering rule.
+   **Signal** triggers fire when the signal bus sees the matching transition.
+4. Actions: allow/block a service for a group, disable a whole group ("all kids
+   devices"), allow/block one named device, **start or stop a whole-house service over
+   SSH**, toggle AdGuard protection, or add/remove a custom filtering rule.
 5. Every action is written to the **Activity** log and pushed live to the UI.
 
 ## Two kinds of rule — deterministic and AI-evaluated
@@ -101,15 +111,29 @@ Warden splits rules by whether they depend on live data:
   Luke has done 30 mins and scored 80%"*) are **evaluated on the fly by the LLM**. Each cycle
   Warden hands the model (a) the rule, (b) the live **state of play** from the sources (Atom:
   today's minutes, topics, assignments…), and (c) the **menu of switches** with their current
-  state — and it returns which switches to flip, *from that menu only*. There is no pre-baked
-  `daily_complete`-style signal; the condition is judged live.
+  state — and it returns which switches to flip, *from that menu only*. The adapters do still
+  publish a baked `atom.luke.daily_complete` signal, but a dynamic rule doesn't consume it —
+  the evaluator re-reads the raw state of play and the rule's own English each time, so a rule
+  can set a bar the signal doesn't encode ("30 mins *and* 80%").
 
-Decisions are **idempotent** (no-op if a switch is already where it should be), **validated**
-(only real groups/services), and **audited with the reasoning** — which also shows on the rule
-card (*"last: Luke has done 0 min today; the rule requires 30"*). Dynamic rules need an LLM
-backend (API key or the Claude CLI); with neither they are skipped. The compiler
-auto-classifies: mention a person or words like minutes/score/done/practice and a rule becomes
-dynamic; otherwise it stays deterministic.
+Decisions are **validated** (only real groups, services and host services get through) and
+**audited with the reasoning**, which also shows on the rule card (*"last: Luke has done 0 min
+today; the rule requires 30"*). They are **idempotent by instruction**: the model is shown each
+switch's current state and told not to return a no-op — the write path doesn't re-check, so
+that one is a prompt guarantee rather than a code one.
+
+Dynamic rules need an LLM backend (API key or the Claude CLI); with neither they are skipped.
+The compiler auto-classifies: mention a person or words like minutes/score/done/practice and a
+rule becomes dynamic; otherwise it stays deterministic. **The classifier promotes but never
+demotes** — so a rule can compile to a perfectly good signal trigger and *still* be marked
+dynamic, at which point that trigger is decorative and only the evaluator acts on it. The
+seeded "when Luke has completed his Atom Learning" rule is exactly this case, which is why it
+does nothing at all without a backend.
+
+**It refuses to act on stale data.** If any enabled source's stored data isn't live — an
+expired session, a portal that didn't answer — every dynamic rule is skipped for that cycle,
+switches are left where they are, and Activity records *"refusing to act on non-live data"*.
+Better to leave the house as it is than to act on last week's picture of it.
 
 ### Dynamic rules schedule themselves
 
@@ -122,16 +146,20 @@ evaluation returns a `next_check_at` that the engine arms as a one-shot job:
 While that instant is in the future the rule is **asleep** — the safety-net tick
 (`WARDEN_EVAL_INTERVAL_MIN`, cron-anchored so checks land on the clock) won't wake it, and
 nor will a poll that brings back the same facts as the last one. That gating is what makes
-"don't check while he's at school" real rather than advisory. The one thing that does wake
-it early is **new data**: when a source run changes the state of play, every dynamic rule
-re-evaluates immediately, because the alternative is a rule sitting on the answer to its own
-question until its next check comes round. Wake-ups are clamped to 5 minutes … 7 days,
+"don't check while he's at school" real rather than advisory.
+
+New data can pull a rule forward, but **only if it was about to look anyway** — within a
+two-hour early-wake window. A rule waiting on the data, checking hourly with its next look
+minutes away, shouldn't sit on the answer to its own question; a rule that said "not until
+tomorrow at 4pm" has already answered it, and waking it contradicts the instruction in its own
+text. That distinction is what `scripts/test_wake_semantics.py` exists to hold.
+Wake-ups are clamped to 5 minutes … 7 days,
 persisted, and re-armed after a restart; "Evaluate now" always overrides. Editing the text
 clears the schedule the old text chose.
 
 **Data first, decisions second.** A rule's wake-up and the source poll it depends on are both
 anchored to the hour, so an evaluation waits for any collection that is running or overdue
-before it reads the world (up to `WARDEN_COLLECT_WAIT_SEC`, default 180s). Without that
+before it reads the world (up to `WARDEN_COLLECT_WAIT_SEC`, default 180s, **per source**). Without that
 barrier a rule reads the *previous* run's stored data and acts a full cadence late.
 
 To reason about school days the evaluator gets a day-by-day lookahead from Weduc's own
@@ -141,18 +169,113 @@ and Weduc's term *periods* run past the last school day.
 
 ## Quick actions
 
-`quick_actions:` in `config/warden.yaml` defines the Dashboard's one-tap buttons — a step naming
-only a `service` fans out to every group that has it ("everywhere"), a step naming a `group`
-covers its whole service list. `revert_after_minutes` snapshots just the affected switches and
-restores them later, so a movie-night unblock can't be left open overnight. Adding a button is a
-config edit, not a code change.
+`quick_actions:` in `config/warden.yaml` defines the Dashboard's one-tap buttons. A step naming
+only a `service` fans out to every group that has it ("everywhere"); add `groups:` to narrow it;
+a step naming a `group` covers its whole service list; a step naming a `host_service` starts or
+stops one of the whole-house services below. `confirm: true` puts a dialog in front, `style:`
+colours the button.
 
-## Sign-in (basic auth)
+`revert_after_minutes` snapshots just the affected switches and restores them later, so a
+movie-night unblock can't be left open overnight. That timer is held **in memory only** — if
+Warden restarts before it fires, it never fires, on the reasoning that you noticing beats a
+stale revert landing at random hours later.
 
-Set `WARDEN_PASSWORD` (and optionally `WARDEN_USERNAME`, default `admin`) in `.env` to
-put a login in front of everything — the UI, the API, and the live WebSocket. The session
-cookie is signed and lasts ~10 years, so you sign in **once per device**. Leave the
-password empty for open access (e.g. behind a VPN). "Log out" lives on the About tab.
+Adding a button is a config edit, not a code change.
+
+## Whole-house services — the lever DNS can't pull
+
+Every switch above works by DNS filtering, which stops a device **looking up a name**. It
+cannot stop a device that already knows an address — and a Plex client on your own LAN finds
+the server by broadcast and connects straight to its IP, never asking DNS at all.
+
+So Warden has a second, blunter lever. `hosts:` and `managed_services:` in
+`config/warden.yaml` describe machines it can reach over SSH and the commands that start,
+stop and query a service on them:
+
+```yaml
+hosts:
+  qnap: { address: 10.7.11.21, port: 22, user_env: QNAP_SSH_USER, password_env: QNAP_SSH_PASS }
+
+managed_services:
+  - id: plex_server
+    name: "Plex server"
+    host: qnap
+    confirm: true
+    start:  "/sbin/qpkg_cli --start PlexMediaServer"
+    stop:   "/sbin/qpkg_cli --stop PlexMediaServer"
+    status: "/sbin/qpkg_cli --status PlexMediaServer"
+    status_running_match: "running"
+```
+
+These appear as a **Whole-house services** bar on the Dashboard, and rules can name them
+(`set_host_service`). They are deliberately kept apart from the per-group toggles, because
+**the blast radius is the whole house**: a stopped service is stopped for everyone, and
+anything mid-stream ends. Hence `confirm: true`.
+
+Needs `QNAP_SSH_USER` / `QNAP_SSH_PASS` in `.env`; without them the card reads `?` rather
+than failing. If the commands are wrong for your NAS — Container Station rather than a QPKG,
+say — `GET /api/hosts/qnap/discover` reports what's actually there so you can swap them in.
+
+## Manual holds — a flip by hand outranks the robots
+
+Toggle a switch, press a quick action, or start/stop a whole-house service, and that exact
+control is **held**. Dynamic rules and signal-fired rules then leave it alone — a "not on
+track" verdict spares held switches and says so in Activity (*"left alone (set by hand…)"*) —
+and the Dashboard badges them ✋.
+
+The hold ends when a **scheduled** rule writes the switch (the 8pm switch-off is the daily
+reset), when you press ▶ Run now, or at 4am as a fallback — whichever comes first. So
+"streaming on" at 2pm means *on until 8pm*, not *on until the next hourly check*.
+
+The point is that the automation is advisory between resets and the person in the room isn't
+overruled by a model thirty seconds later.
+
+## Device overrides
+
+The **Devices** tab lists every client AdGuard knows about, and unblocks one for 2h / 4h /
+24h / forever without touching its group. An override exempts that device from *group-level*
+writes, so the 8pm rule can fire and still leave the one unblocked tablet alone; a sweep puts
+timed ones back when they lapse. A group switch that is on for some devices and off for
+others reads **mixed · blocked on N devices**.
+
+## Turning protection off
+
+The Network-protection toggle is the nuclear switch: AdGuard filters nothing, for everyone.
+It stays available, because filtering does occasionally break something real — but turning it
+off **asks for a reason and a name, both required**. The reason is refused if it's missing,
+under 8 characters, or reads like a streaming excuse ("the kids want Netflix") — per-service
+switches exist for exactly that, and the refusal names the word that tripped it.
+
+**Refused attempts are logged too**, so probing the gate is visible. While protection is off
+the whole app shows a lockout screen naming who turned it off, why, and when. This is
+accountability, not access control; if you need the latter, set `WARDEN_PASSWORD`.
+
+## Seeing what the model was asked
+
+Warden asks a model to do four things — compile a rule, judge a dynamic rule, read the school
+messages for Reminders, and read the newsletter. Each is a decision made in your house on a
+model's say-so, so each is recorded **verbatim**: system prompt, the message as it went out,
+and the reply as it came back.
+
+Every call puts an `llm_call` line in Activity with its purpose, model, tokens and duration,
+and a **prompt ⤢** button that opens the exchange. Failures are kept too — timeouts, replies
+that were all thinking and no answer, malformed JSON — because those are the ones worth
+reading. A retry after bad JSON is its own line, marked *(retry)*, rather than hiding behind
+the answer that eventually worked. The last few hundred exchanges are kept; `GET /api/llm`
+and `/api/llm/{id}` are the same thing over the API.
+
+## Sign-in
+
+Set `WARDEN_PASSWORD` (and optionally `WARDEN_USERNAME`, default `admin`) in `.env` to put a
+login in front of everything — the UI, the API, and the live WebSocket. It's a form login and a
+signed session cookie, not HTTP Basic; the cookie lasts ~10 years, so you sign in **once per
+device**. `/healthz` and `/static/` stay public so the container healthcheck and assets still
+work. Leave the password empty for open access (e.g. behind a VPN). "Log out" lives on the
+About tab.
+
+The signing key is derived from the credentials unless you pin `WARDEN_SECRET`, so changing the
+password signs every device out — set `WARDEN_SECRET` to a random string if you'd rather it
+didn't.
 
 ## Rule-compiler backend — API key *or* your Claude Code login
 
@@ -165,8 +288,15 @@ password empty for open access (e.g. behind a VPN). "Log out" lives on the About
 | `cli` | the local **`claude`** CLI (`claude -p`) — reuses your Claude Code login, **no API key, no extra billing** |
 | `off` | the built-in deterministic parser only |
 
-The deterministic parser already handles the common phrasings offline; a backend only
-adds understanding of looser wording. The active backend is shown on the About tab.
+`WARDEN_LLM_MODEL` picks the model that compiles rules (haiku by default — cheap and fast).
+`WARDEN_EVAL_MODEL` picks the one that judges dynamic rules, and is deliberately stronger,
+because that model also has to do the clock-and-term arithmetic to choose its own next
+wake-up.
+
+The deterministic parser handles the common time-and-service phrasings offline, but it can only
+ever emit `set_service` and `set_group` — per-device actions, whole-house service control,
+multi-moment rules and every AI-evaluated rule need a backend. The active backend is shown on
+the About tab.
 
 ## Atom Learning — first run (Google sign-in)
 
@@ -186,8 +316,9 @@ session expires; the Sources card tells you when it has.
 
 It reads `islands` (topics completed, with timestamps), `learning-resources` (set work),
 `learning-journey-targets` (this week's plan), `score` (attainment 0–1 overall + per subject
-+ mastery, with monthly history) and `mock_tests` (exact % correct) — assembling a **state of play** the dynamic rules reason over
-(today's minutes, per-topic scores, subject attainment, recent mock results, assignments). Each
++ mastery) and `mock_tests` (exact % correct) — assembling a **state of play** the dynamic
+rules reason over (today's minutes, per-topic completion times, subject attainment, recent
+mock results, assignments). Each
 change is archived (`GET /api/sources/atom/history`) so Luke's progress accumulates over time.
 
 The week's workload comes from Atom itself: `learning-journey-targets` gives this ISO week's
@@ -224,9 +355,11 @@ Two things about this portal are easy to get wrong and worth knowing:
   httpx headlessly — no browser at collect time, container included.
 
 Live endpoints used: outstanding forms, newsfeed river, messages, child profile, calendar
-events and the newsletter PDFs. The forms list drives `weduc.<subject>.forms_outstanding`;
-the calendar drives `weduc.<subject>.school_day_today` and the school-day lookahead. Meals
-are **not yet collected** — `--recon` is the tool for mapping them.
+events, school meals (`POST /rest/dinner/getEvents`) and the newsletter PDFs. The forms list
+drives `weduc.<subject>.forms_outstanding`; the calendar drives
+`weduc.<subject>.school_day_today` and the school-day lookahead; the meals join drives
+`weduc.<subject>.lunch_booked_tomorrow`. When the portal changes and an endpoint stops
+answering, `--recon` is the tool for re-mapping it.
 
 ### Reading the newsletter (`warden/documents.py`)
 
@@ -249,7 +382,7 @@ otherwise.
 ### Daily reminders (`warden/reminders.py`)
 
 The Weduc adapter brings back the class calendar, the head's messages, forms and term
-dates — but as ~140 undifferentiated Items. The **Reminders** tab answers the question
+dates — but as a couple of hundred undifferentiated Items. The **Reminders** tab answers the question
 that data is actually for: *is there school tomorrow, what does he take, and is there
 anything I was meant to have done?*
 
@@ -332,12 +465,51 @@ expecting a row that says so.
 2. Add a `sources:` block and any new `signals:` to `config/warden.yaml`.
 3. Reference the new signal in a plain-English rule. Done — no core changes.
 
+Each adapter also carries a `manifest.json` (id, capabilities, `secrets_required`,
+`emits_signals`) parsed at import — a bad one fails discovery — and a `fixtures/` folder so it
+can still run offline. `collect()` returns `Item[]`, `Signal[]` and a free-form `state` dict:
+that last one is the "state of play" the AI-evaluated rules actually reason over, so put the
+structured facts there rather than only in prose items.
+
+**Not yet integrated: Amazon Kids tablets.** `warden/adapters/amazon/` holds a recon tool
+(`python -m warden.adapters.amazon.login --check`) and nothing else — no adapter, no manifest,
+no config entry, so naming it in `config/warden.yaml` would fail. The gap it's aimed at is
+real and unreachable by DNS: a Fire tablet playing a film it has already downloaded. See
+`../docs/amazon-parent-dashboard-RECON.md`.
+
+## Checking it still works
+
+```powershell
+.venv\Scripts\python.exe scripts/test_wake_semantics.py   # offline; guards the wake-up rules
+```
+
+`scripts/smoke.py` exercises the API end to end, but **it mutates whatever it points at** —
+its last step sets `kids/youtube = allowed` and never restores it, and the Atom run it does
+(against fixtures, `live=false`) still pushes signals onto the live bus, which can make dynamic
+rules fire. Point it only at a throwaway instance:
+
+```powershell
+$env:ADGUARD_MODE="fake"; $env:WARDEN_PORT="8099"; $env:WARDEN_DB="data/smoke.db"
+.venv\Scripts\python.exe -m warden                          # separate terminal
+.venv\Scripts\python.exe scripts\smoke.py http://127.0.0.1:8099
+```
+
 ## Endpoints
 
-`GET /api/state · /status · /config · /audit` · `POST /api/actions/{service,group,client,protection}` ·
-`/api/rules` CRUD + `/preview` + `/{id}/run` · `/api/sources` + `/{key}/run` + `/{key}/items` ·
-`/api/signals` + `/emit` · `GET /api/reminders` + `POST /api/reminders/refresh` ·
-`GET /ws` (live). Full contract in `INTERFACES.md`.
+| Area | Routes |
+| --- | --- |
+| State | `GET /api/state` · `/status` · `/config` · `/audit` · `/llm` · `/llm/{id}` |
+| Actions | `POST /api/actions/{service,group,client,protection}` · `GET /api/actions/quick` · `POST /api/actions/quick/{id}` |
+| Devices | `GET /api/devices` · `POST /api/devices/unblock` · `DELETE /api/devices/override` |
+| Hosts | `GET /api/hosts/services` · `POST /api/hosts/services/{id}` · `GET /api/hosts/{host}/discover` |
+| Rules | `GET/POST /api/rules` · `PUT/DELETE /api/rules/{id}` · `POST /api/rules/preview` · `/{id}/run` · `/{id}/recompile` · `/{id}/toggle` |
+| Sources | `GET /api/sources` · `POST /{key}/run` · `GET /{key}/items` · `/{key}/history` · `/{key}/documents` · `GET/PUT/DELETE /{key}/target` |
+| Signals | `GET /api/signals` · `/{key}/history` · `POST /api/signals/emit` |
+| Reminders | `GET /api/reminders` · `POST /api/reminders/refresh` |
+| AdGuard | `GET/POST/DELETE /api/adguard/rules` |
+| Other | `GET /ws` (live) · `GET /healthz` · `GET/POST /login` · `GET /logout` |
+
+Full contract in `INTERFACES.md`.
 
 ## Security & scope
 

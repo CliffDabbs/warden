@@ -1,3 +1,8 @@
+> **Legacy — the Home Assistant era.** Superseded by
+> [Warden](../warden/README.md): schedules are now plain-English rules on a cron trigger, and
+> overrides are quick actions with a timed revert. Ignore anything below claiming Home
+> Assistant owns the runtime. Not maintained, not deployed.
+
 # Scheduling in Home Assistant
 
 Automations handle the recurring rules. The trick that keeps it clean:

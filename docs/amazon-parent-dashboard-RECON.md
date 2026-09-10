@@ -48,7 +48,7 @@ control only", and that is fine.
    `--check` today, tomorrow, and a week later. If it dies in a day, no adapter: a control that
    needs a human to sign in every morning is worse than no control.
 2. **Is it JSON?** If the dashboard renders server-side, we are scraping a DOM that Amazon
-   redesigns at will — the ParentPay `.aspx` lesson (see INTERFACES module F).
+   redesigns at will — the ParentPay `.aspx` lesson — anchor on server-control element ids, not the CSS classes around them.
 3. **How is a call authorised?** Cookie alone is replayable from httpx in the container. A
    bearer token or a per-page anti-CSRF token means fetching a page to mint one before every
    action, or keeping a browser alive — a different, heavier adapter.
@@ -85,3 +85,15 @@ usage. They stay on this machine.
 - **Expect it to break.** Undocumented endpoints change. Whatever is built needs the same
   posture as the Atom adapter: a live failure is a failure, never fixtures passed off as real,
   and never a stale "paused" state presented as current.
+
+---
+
+## Findings
+
+`python -m warden.adapters.amazon.login --check` answers the gating questions above. Record
+the answers here when it has been run — a "no" on any of them is the reason not to build the
+adapter, and worth writing down so the question isn't re-opened from scratch later.
+
+| Question | Answer | Checked |
+| --- | --- | --- |
+| | | |

@@ -1,3 +1,16 @@
+> **Legacy — superseded by [Warden](../warden/README.md).** This tool's job
+> (one config file reconciled onto AdGuard) is now Warden's AdGuard service plus
+> `warden/config/warden.yaml`, live and with no Home Assistant in the loop.
+>
+> ⚠️ **`deploy.py` still runs, and still writes to the same live AdGuard that Warden now owns.**
+> Running it will overwrite Warden's client tags and blocked-service lists. `screentime.yaml`
+> has also drifted from `warden/config/warden.yaml` — different Living Room TV address, and
+> services listed here that Warden no longer manages.
+>
+> **Still live:** `deploy.py` is the only code in this repo that writes AdGuard's always-on
+> baseline (safe search, parental control, safe browsing). Warden reads that setting but never
+> writes it — see [docs/05](../docs/05-adguard-rules.md).
+
 # screentime — parental controls as code
 
 One config file (`screentime.yaml`) → reconciled to **AdGuard** (clients, tags, baseline,

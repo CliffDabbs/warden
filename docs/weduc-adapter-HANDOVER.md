@@ -1,3 +1,12 @@
+> **Historical — recon as of 21 July 2026, superseded by
+> [`warden/warden/adapters/weduc/`](../warden/warden/adapters/weduc/).**
+> An honest record of what the portal looked like when it was mapped. Since then: the two-host
+> split (API on `app.weduc.co.uk`, SPA on `ui.app.weduc.co.uk`) turned out to be the thing that
+> matters most, meals and the school calendar became first-class collections, and the newsletter
+> is read by the hub rather than forwarded as a PDF the way §4 imagines.
+>
+> *(Previously filed as `weduclukedigestHANDOVER (2).md`.)*
+
 # Adapter Brief — Weduc (Source Adapter #1)
 
 **A source adapter for the multi-source digest platform. It authenticates to the Weduc / ReachMoreParents parent portal, collects everything the account can see, and returns it as normalised `Item[]` to the hub. It does NOT decide relevance or send notifications — that is the hub's job.**

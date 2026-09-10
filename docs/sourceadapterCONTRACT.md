@@ -1,3 +1,13 @@
+> **Historical — superseded by the shipped adapter contract.**
+> This is the original platform spec, written before any adapter existed. Its §3 Item schema
+> survives more or less intact, but the notification-digest product around it was never built,
+> and it predates two things every real adapter returns: **Signals** and the free-form
+> **`state`** dict the rules engine actually reasons over. Following this document today would
+> produce an adapter the registry cannot load.
+>
+> **For the live contract, read [`warden/INTERFACES.md`](../warden/INTERFACES.md)**
+> and [`warden/warden/adapters/base.py`](../warden/warden/adapters/base.py).
+
 # Multi-Source Digest Platform — Core Architecture & Adapter Contract (v1)
 
 **A central service ("the hub") that ingests from many authenticated websites via interchangeable *source adapters*, normalises everything to one item model, applies LLM relevance + summarisation per subject, and dispatches notifications or actions. Weduc is the first adapter; adding a website means writing a new adapter to this contract — the core never changes.**

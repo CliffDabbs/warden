@@ -1,3 +1,11 @@
+> **Historical — recon as of 21 July 2026, superseded by
+> [`warden/warden/adapters/atom/`](../warden/warden/adapters/atom/).**
+> An honest record of what the portal looked like when it was mapped; the code has moved past
+> it. Most importantly, **auth is Google SSO**, not the form login assumed here — the session
+> is captured once by hand (`python -m warden.adapters.atom.login`) and then replayed
+> headlessly. The shipped adapter also emits four signals and derives the weekly island target
+> from Atom's own published plan, neither of which appears below.
+
 # Adapter Brief — Atom Learning (Source Adapter #2)
 
 **A source adapter for the multi-source digest platform. It reads a child's Atom Learning account and returns normalised `Item[]` — principally: what work has been set, and what work Luke has actually done (with timestamps). It does NOT decide relevance or notify — that's the hub.**

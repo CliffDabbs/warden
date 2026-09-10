@@ -1,3 +1,13 @@
+> **Legacy — the Home Assistant era.** Superseded by
+> [Warden](../warden/README.md), which owns the client tags, groups and per-service blocking
+> described here. Ignore anything below claiming Home Assistant is the source of truth for the
+> switches; Warden is. Not maintained, not deployed.
+>
+> **Still live:** the AdGuard tag / `$ctag` / service-id reference, and **Step 2's always-on
+> baseline** (safe search, parental control, safe browsing). Warden reads that baseline from
+> `config/warden.yaml` but **never writes it** — so setting it remains a manual step, and this
+> document plus `iac/deploy.py` are the only places it is written down.
+
 # Organising AdGuard rules — kids locked down, services toggled from Home Assistant
 
 Goal: kids' devices are **fully controlled** (safe baseline, always on), and you get **Home Assistant switches** to flip services like YouTube/Netflix on and off — per group, from your phone.

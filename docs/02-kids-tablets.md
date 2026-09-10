@@ -1,3 +1,11 @@
+> **Legacy — the Home Assistant era.** Superseded by
+> [Warden](../warden/README.md): per-device blocking now lives on the Devices tab, with timed
+> unblocks. Not maintained, not deployed.
+>
+> The problem this project *didn't* solve — a tablet playing content it has already downloaded,
+> or moved onto a hotspot — is still open, and is now tracked in
+> [amazon-parent-dashboard-RECON.md](amazon-parent-dashboard-RECON.md).
+
 # Project B — Block the kids' tablets
 
 A per-device internet kill switch: scheduled (bedtime / homework) plus an ad-hoc toggle. Because the tablets connect through your **UniFi APs**, the cleanest control is UniFi's built-in "block client", surfaced into Home Assistant.

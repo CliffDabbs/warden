@@ -1,3 +1,9 @@
+> **Legacy — the Home Assistant era, and never finished.**
+> Unlike the other projects here, **nothing supersedes this one** — Warden is about parental
+> controls and has no energy features. `packages/octopus_free_charge.yaml` is still a template
+> full of `# TODO`s, and the entity IDs and the Solar Assistant MQTT control topic were never
+> filled in. Pick it up here if you ever want it.
+
 # Project C — Charge batteries on Octopus free-electricity sessions
 
 When Octopus runs a **Free Electricity session** (the "opt in, free power between X and Y on date Z" emails — aka Power-ups), force the Sunsynk to **grid-charge** the battery until a target SoC, then revert to normal self-use.
